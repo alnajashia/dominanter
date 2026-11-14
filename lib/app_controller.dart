@@ -62,6 +62,13 @@ class AppController extends ChangeNotifier {
   ImpulseLock impulseLock = const ImpulseLock();
   ForcedRemoval forcedRemoval = const ForcedRemoval();
 
+  /// Live dual-clock due flag for the forced-removal countdown
+  /// (item 6): true when the countdown is due by the accumulated
+  /// ticks OR by both clocks having advanced a full delay since
+  /// filing. Refreshed at startup and on every 30 s tick; the tile
+  /// reads this, never a bare [ForcedRemoval.isComplete].
+  bool forcedRemovalDue = false;
+
   /// The forced-removal delay in force. The authoritative value is
   /// native (RecoveryStore.FORCED_REMOVAL_DELAY_HOURS) and arrives via
   /// the channel's owner state during [initialise]; until then the
@@ -139,6 +146,7 @@ class AppController extends ChangeNotifier {
         // Channel unavailable (widget tests, non-Android hosts): the
         // bootstrap mirror stays in force.
       }
+      await _refreshForcedRemovalDue();
       final isSet = await channel.isRecoveryCodeSet();
       startup = isSet ? StartupState.locked : StartupState.needsRecoverySetup;
       // Re-initialisation (the startup error screen's Retry) must not
@@ -160,6 +168,37 @@ class AppController extends ChangeNotifier {
     _ticker?.cancel();
     _tickDelta.reset(FocusSession.monotonicNow);
     _ticker = Timer.periodic(const Duration(seconds: 30), (_) => _tick());
+  }
+
+  /// Refreshes [forcedRemovalDue] from the live clocks: due when the
+  /// accumulated ticks OR both clocks have advanced a full delay
+  /// since filing (item 6 — a killed app stalls the ticks, the
+  /// clocks do not stall). A missing channel method (widget tests,
+  /// non-Android hosts) leaves the flag false: accumulation-only,
+  /// exactly as before. Notifies only when the flag flips.
+  Future<void> _refreshForcedRemovalDue() async {
+    if (!forcedRemoval.active || forcedRemoval.isComplete) {
+      if (forcedRemovalDue) {
+        forcedRemovalDue = false;
+        notifyListeners();
+      }
+      return;
+    }
+    Duration? elapsed;
+    try {
+      elapsed = await channel.getElapsedRealtimeMs();
+    } catch (_) {
+      elapsed = null;
+    }
+    final due = elapsed != null &&
+        forcedRemoval.isDueAt(
+          wallNow: DateTime.now(),
+          elapsedNow: elapsed,
+        );
+    if (due != forcedRemovalDue) {
+      forcedRemovalDue = due;
+      notifyListeners();
+    }
   }
 
   Future<void> _tick() async {
@@ -191,6 +230,7 @@ class AppController extends ChangeNotifier {
         await config.setForcedRemoval(forcedRemoval);
         changed = true;
       }
+      if (forcedRemoval.active) await _refreshForcedRemovalDue();
       if (changed) notifyListeners();
     } catch (_) {
       // Contained by design: see the note above.

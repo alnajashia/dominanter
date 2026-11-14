@@ -418,11 +418,22 @@ class RecoverySession extends ChangeNotifier {
 /// reaches Dart through the channel's owner state; [defaultTotal] is only
 /// the bootstrap mirror used until the first native state arrives, and the
 /// controller rebinds the live value with [withTotal] at initialise.
+///
+/// Filing timestamps (2026-11-14 hardening): [start] records the
+/// wall-clock time and, when the caller can supply it, the
+/// elapsedRealtime at filing. [isDueAt] then becomes due when BOTH
+/// clocks have advanced a full delay since filing — so the countdown
+/// survives the app being killed (the old accumulation-only check
+/// stalled whenever the process was dead). The native side applies
+/// the same dual-clock rule before letting a due forced removal past
+/// an active seal.
 class ForcedRemoval {
   const ForcedRemoval({
     this.active = false,
     this.accumulated = Duration.zero,
     this.total = defaultTotal,
+    this.startedAtWall,
+    this.startedAtElapsed,
   });
 
   /// Bootstrap mirror of the native delay constant (see class doc).
@@ -432,30 +443,86 @@ class ForcedRemoval {
   final Duration accumulated;
   final Duration total;
 
+  /// Wall-clock time of filing (stamped by [start]).
+  final DateTime? startedAtWall;
+
+  /// Elapsed-realtime at filing (supplied by the caller once the
+  /// channel exposes it; null until then).
+  final Duration? startedAtElapsed;
+
   Duration get remaining => total - accumulated;
   bool get isComplete => active && accumulated >= total;
   double get progress => (accumulated.inMilliseconds / total.inMilliseconds).clamp(0, 1);
 
-  /// The same accounting bound to a different delay (the native value).
-  ForcedRemoval withTotal(Duration value) =>
-      ForcedRemoval(active: active, accumulated: accumulated, total: value);
+  /// Due by the delay under EITHER accounting: the accumulated
+  /// ticks, or both clocks having advanced a full delay since
+  /// filing (the kill-proof leg). [elapsedNow] is SystemClock
+  /// elapsedRealtime; a reboot since filing restarts that clock,
+  /// so the elapsed leg then counts time since the reboot.
+  bool isDueAt({required DateTime wallNow, required Duration elapsedNow}) {
+    if (!active) return false;
+    if (accumulated >= total) return true;
+    final wallStart = startedAtWall;
+    final elapsedStart = startedAtElapsed;
+    if (wallStart == null || elapsedStart == null) return false;
+    final wallDelta = wallNow.difference(wallStart);
+    final elapsedDelta = elapsedNow < elapsedStart
+        ? elapsedNow
+        : elapsedNow - elapsedStart;
+    return wallDelta >= total && elapsedDelta >= total;
+  }
 
-  ForcedRemoval start() => ForcedRemoval(active: true, total: total);
+  /// The same accounting bound to a different delay (the native value).
+  ForcedRemoval withTotal(Duration value) => ForcedRemoval(
+        active: active,
+        accumulated: accumulated,
+        total: value,
+        startedAtWall: startedAtWall,
+        startedAtElapsed: startedAtElapsed,
+      );
+
+  ForcedRemoval start({DateTime? atWall, Duration? atElapsed}) =>
+      ForcedRemoval(
+        active: true,
+        total: total,
+        startedAtWall: atWall ?? DateTime.now(),
+        startedAtElapsed: atElapsed,
+      );
   ForcedRemoval cancel() => ForcedRemoval(total: total);
   ForcedRemoval advance(Duration delta) {
     if (!active || delta.isNegative) return this;
-    return ForcedRemoval(active: true, accumulated: accumulated + delta, total: total);
+    return ForcedRemoval(
+      active: true,
+      accumulated: accumulated + delta,
+      total: total,
+      startedAtWall: startedAtWall,
+      startedAtElapsed: startedAtElapsed,
+    );
   }
 
   Map<String, dynamic> toJson() => {
         'active': active,
         'accumulatedMs': accumulated.inMilliseconds,
+        'startedAtWallMs': startedAtWall?.millisecondsSinceEpoch,
+        'startedAtElapsedMs': startedAtElapsed?.inMilliseconds,
       };
 
-  factory ForcedRemoval.fromJson(Map<String, dynamic> j) => ForcedRemoval(
-        active: j['active'] as bool? ?? false,
-        accumulated: Duration(milliseconds: (j['accumulatedMs'] as num?)?.toInt() ?? 0),
-      );
+  factory ForcedRemoval.fromJson(Map<String, dynamic> j) {
+    final wallMs = (j['startedAtWallMs'] as num?)?.toInt();
+    final elapsedMs = (j['startedAtElapsedMs'] as num?)?.toInt();
+    return ForcedRemoval(
+      active: j['active'] as bool? ?? false,
+      accumulated: Duration(
+        milliseconds: (j['accumulatedMs'] as num?)?.toInt() ?? 0,
+      ),
+      startedAtWall: wallMs == null
+          ? null
+          : DateTime.fromMillisecondsSinceEpoch(wallMs),
+      startedAtElapsed: elapsedMs == null
+          ? null
+          : Duration(milliseconds: elapsedMs),
+    );
+  }
 }
 
 /// Impulse-lock timer model (F21): 15 min – 6 h, clock-change resistant in

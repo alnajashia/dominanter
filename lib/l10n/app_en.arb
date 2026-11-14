@@ -650,8 +650,6 @@
   "dnsProtectionNote": "This browser cannot block sites from inside, so sites cannot be blocked in it completely. DNS protection instead blocks banned domains for the whole device — every browser and app — at domain level only, not per page.",
   "dnsProtectionEnabled": "Enabled",
   "dnsProtectionDisabled": "Disabled",
-  "dnsProviderNextdns": "NextDNS",
-  "dnsProviderNextdnsNote": "Your own blocklist (managed in the NextDNS dashboard)",
   "dnsProviderCleanbrowsing": "CleanBrowsing (Family filter)",
   "dnsProviderCleanbrowsingNote": "Adult content and proxies, no account needed",
   "dnsProviderCloudflare": "Cloudflare (Family filter)",
@@ -669,21 +667,6 @@
       }
     }
   },
-  "dnsConfigIdLabel": "NextDNS configuration ID",
-  "dnsConfigIdHint": "e.g. abc123",
-  "dnsConfigIdHostname": "Hostname: {id}.dns.nextdns.io",
-  "@dnsConfigIdHostname": {
-    "placeholders": {
-      "id": {
-        "type": "String"
-      }
-    }
-  },
-  "dnsNextdnsHowTitle": "How do I set up NextDNS?",
-  "dnsNextdnsStep1": "1. Create a free account at nextdns.io (email and password, no card).",
-  "dnsNextdnsStep2": "2. Copy the configuration ID from the Setup tab in the dashboard.",
-  "dnsNextdnsStep3": "3. Add sites to the Denylist from the Privacy tab, and turn on Block Bypass Methods in Settings.",
-  "dnsNextdnsStep4": "4. Paste the ID in the field above and turn protection on — Azm sets it and locks it.",
   "torrentTitle": "Block torrent apps",
   "torrentSub": "Suspends any installed torrent app now, and any installed later",
   "torrentDetectedNone": "No torrent apps found on this phone",
@@ -705,7 +688,6 @@
   "autoBlockUninstallSub": "While on, any suspended or blocked app cannot be uninstalled",
   "autoBlockUninstallOn": "Uninstall blocked for suspended apps",
   "autoBlockUninstallOff": "Uninstall allowed for suspended apps",
-  "dnsInvalidConfigId": "Enter a valid NextDNS configuration ID",
   "dnsCurrentHost": "Current host: {hostname}",
   "@dnsCurrentHost": {
     "placeholders": {
@@ -715,6 +697,7 @@
     }
   },
   "dnsNotSet": "Private DNS is not set",
+  "dnsOff": "Off",
   "dnsApplied": "DNS protection applied",
   "dnsTurnedOff": "DNS protection turned off",
   "dnsSettings": "Settings",
@@ -894,6 +877,11 @@
   "dangerZone": "Danger zone",
   "removeOwnerNow": "Remove Device Owner now",
   "removeOwnerNowSub": "Immediate, inside a recovery session — every restriction this app enforces stops at once.",
+  "uninstallAzm": "Uninstall Azm",
+  "uninstallAzmSub": "Remove Azm from this phone — opens the system uninstaller.",
+  "uninstallAzmConfirmTitle": "Uninstall Azm?",
+  "uninstallAzmConfirmBody": "This opens the system uninstaller for Azm. If you confirm there, the app is removed from this phone. Any restriction it enforces stops with it — make sure the Device Owner removal above is finished first.",
+  "uninstallNotStarted": "The system uninstaller could not be opened.",
   "forcedIdleSub": "The only code-free escape: after 24 hours, Device Owner can be removed without the recovery code.",
   "forcedCompleteSub": "Complete — removal can now be finished without a code.",
   "forcedProgressSub": "In progress — {remaining} remaining (advances while the app is running)",
@@ -1393,7 +1381,11 @@
   },
   "lockdownEndEarly": "End lockdown early",
   "lockdownStartTitle": "Start a lockdown",
-  "lockdownDuration": "Duration (minutes)",
+  "lockdownDuration": "Duration",
+  "lockdownDurationTotalMinutes": "Total minutes",
+  "lockdownDurationHours": "Hours",
+  "lockdownDurationMinutes": "Minutes",
+  "lockdownDurationSeconds": "Seconds",
   "lockdownScope": "Applies to",
   "lockdownScopeAll": "Whole phone",
   "lockdownScopeApps": "Chosen apps",
@@ -2095,5 +2087,15 @@
         "type": "String"
       }
     }
-  }
+  },
+  "removalStepLockdown": "End active lockdown",
+  "removalStepRemoveAdmin": "Remove Device Admin",
+  "removalStepStopAccessibility": "Stop accessibility service",
+  "removalStepSkipped": "skipped — requires Device Owner",
+  "removalReprovisionGuidance": "The owner was already removed earlier, but some policies can only be cleared by re-provisioning as Device Owner (via Shizuku) and then removing again.",
+  "removalColourPreflightTitle": "Colour restore may fail",
+  "removalColourPreflightBody": "Colour modes are currently enforced, but the WRITE_SECURE_SETTINGS permission is not granted (Shizuku is stopped). Restart Shizuku and re-grant the permission first, then remove again — or continue anyway.",
+  "removalColourPreflightContinue": "Continue anyway",
+  "authBiometricLockedOut": "Biometrics are locked out after failed attempts — use your device PIN, pattern or password to unlock.",
+  "buildStamp": "Build"
 }

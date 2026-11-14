@@ -365,20 +365,25 @@ class PrivateDnsState {
 }
 
 /// One step of the v1.0.5 removal teardown (fix #6), in execution order.
+/// `skipped` marks a step that could not run for lack of owner power
+/// (half-torn-down re-run): neither a pass nor a failure.
 class RemovalStepResult {
   const RemovalStepResult({
     required this.id,
     required this.ok,
     required this.detail,
+    this.skipped = false,
   });
   final String id;
   final bool ok;
   final String detail;
+  final bool skipped;
   factory RemovalStepResult.fromMap(Map<dynamic, dynamic> m) =>
       RemovalStepResult(
         id: m['id'] as String? ?? '',
         ok: m['ok'] as bool? ?? false,
         detail: m['detail'] as String? ?? '',
+        skipped: m['skipped'] as bool? ?? false,
       );
 }
 
@@ -390,15 +395,25 @@ class DeviceOwnerRemovalResult {
   const DeviceOwnerRemovalResult({
     required this.isDeviceOwner,
     required this.steps,
+    this.startedAsOwner = true,
   });
   final bool isDeviceOwner;
   final List<RemovalStepResult> steps;
+
+  /// Whether the run began as Device Owner. A reply missing the flag
+  /// (an older native build) is read as an owner run: the removal tile
+  /// required owner status then, so no such reply can come from a re-run.
+  final bool startedAsOwner;
 
   /// Device Owner is gone (verified natively by re-read).
   bool get removed => !isDeviceOwner;
 
   /// Steps that did not complete, in execution order.
   List<RemovalStepResult> get failedSteps => steps.where((s) => !s.ok).toList();
+
+  /// Steps that could not run for lack of owner power, in order.
+  List<RemovalStepResult> get skippedSteps =>
+      steps.where((s) => s.skipped).toList();
 
   /// Fully clean removal: owner gone and every teardown step succeeded.
   bool get clean => removed && failedSteps.isEmpty;
@@ -407,6 +422,7 @@ class DeviceOwnerRemovalResult {
       DeviceOwnerRemovalResult(
         // A reply missing the flag is read conservatively: still owner.
         isDeviceOwner: m['isDeviceOwner'] as bool? ?? true,
+        startedAsOwner: m['startedAsOwner'] as bool? ?? true,
         steps: [
           for (final e in (m['steps'] as List? ?? const []))
             RemovalStepResult.fromMap(e as Map<dynamic, dynamic>),
@@ -1073,6 +1089,22 @@ class PrivilegedChannel {
     );
   }
 
+  /// Elapsed-realtime clock (SystemClock.elapsedRealtime, ms since
+  /// boot) — the second clock of the forced-removal dual-clock due
+  /// check (item 6, 2026-11-14). A missing method (an old native
+  /// side) throws like any other getter; callers that only need the
+  /// timestamp leg guard the call and fall back to accumulation.
+  Future<Duration> getElapsedRealtimeMs() async {
+    final reply = await _invokeMap('getElapsedRealtimeMs');
+    final ms = reply['elapsedRealtimeMs'];
+    if (ms is num) return Duration(milliseconds: ms.toInt());
+    throw PrivilegedException(
+      'INTERNAL',
+      'Malformed reply from native layer for getElapsedRealtimeMs',
+      {'cause': 'missing verified field "elapsedRealtimeMs"'},
+    );
+  }
+
   // ---------------------------------------------------------- Shizuku
 
   Future<ShizukuStatus> getShizukuState() async =>
@@ -1444,6 +1476,23 @@ class PrivilegedChannel {
   /// side's verified `checkSelfPermission` re-check, without granting.
   Future<bool> isWriteSecureSettingsGranted() async =>
       (await _invokeMap('isWriteSecureSettingsGranted'))['granted'] as bool? ??
+      false;
+
+  /// Whether any colour mode is currently enforced (the removal
+  /// pre-flight warns before tearing down when the grant above is
+  /// absent, because the colour step could not restore the keys).
+  Future<bool> hasEnforcedColourModes() async =>
+      (await _invokeMap('hasEnforcedColourModes'))['enforced'] as bool? ??
+      false;
+
+  /// Opens the system uninstaller for Azm itself (in-app
+  /// self-uninstall). The system always shows its own confirmation
+  /// dialog, and refuses while Device Owner is still active — hence
+  /// the UI offers this only after a clean teardown or when the app
+  /// is not the owner. Returns whether the uninstaller intent
+  /// started.
+  Future<bool> requestSelfUninstall() async =>
+      (await _invokeMap('requestSelfUninstall'))['started'] as bool? ??
       false;
 
   Future<bool> setAccessibilityEnabled(bool enabled) async => _verifiedBool(

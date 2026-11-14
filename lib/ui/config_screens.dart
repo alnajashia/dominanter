@@ -10,7 +10,6 @@ import 'package:flutter/services.dart';
 
 import '../app_controller.dart';
 import '../data/config_store.dart';
-import '../data/dns_protection.dart';
 import '../data/privileged_channel.dart';
 import '../l10n/l10n.dart';
 import 'common.dart';
@@ -32,32 +31,6 @@ class _BrowserRestrictionsScreenState extends State<BrowserRestrictionsScreen> {
   Object? _error;
   bool _busy = false;
 
-  // DNS protection (Batch DNS): persisted selection + verified native
-  // state. The shortcut card below the browsers scrolls to the full
-  // DNS card below the blocklists. (DNS batch, 2026-11-14: the card
-  // is now the ONE DNS place — the Config-tab dialog is retired —
-  // with an optional provider list, the real failure reason, and
-  // automatic retry on HOST_NOT_SERVING.)
-  DnsProtection? _dns;
-  PrivateDnsState? _dnsState;
-  bool _dnsBusy = false;
-  final _dnsCardKey = GlobalKey();
-  final _dnsIdController = TextEditingController();
-  final _dnsCustomController = TextEditingController();
-
-  /// The last selection an apply was attempted with (it may differ
-  /// from [_dns] when the apply failed — [_dns] only ever holds a
-  /// verified state). The inline Retry button re-applies this one.
-  DnsProtection? _dnsPending;
-
-  /// The mapped failure message of the last DNS apply, shown inline
-  /// under the provider list with a Retry button; null when the last
-  /// apply succeeded (or none was attempted).
-  String? _dnsError;
-
-  /// True while an apply is inside its automatic retry loop.
-  bool _dnsRetrying = false;
-
   @override
   void initState() {
     super.initState();
@@ -66,8 +39,6 @@ class _BrowserRestrictionsScreenState extends State<BrowserRestrictionsScreen> {
 
   @override
   void dispose() {
-    _dnsIdController.dispose();
-    _dnsCustomController.dispose();
     super.dispose();
   }
 
@@ -84,50 +55,12 @@ class _BrowserRestrictionsScreenState extends State<BrowserRestrictionsScreen> {
       } catch (e) {
         browserError = e;
       }
-      // Batch DNS: persisted selection + the verified native state
-      // (never trust the saved flag alone — read the device).
-      DnsProtection? dns;
-      PrivateDnsState? dnsState;
-      try {
-        dns = await widget.controller.config.getDnsProtection();
-      } catch (_) {}
-      try {
-        dnsState = await widget.controller.channel.getPrivateDns();
-      } catch (_) {}
       if (mounted) {
         setState(() {
           _lists = lists;
           _browsers = browsers;
           _error = browserError;
-          _dns = dns;
-          _dnsState = dnsState;
-          if (dns != null) {
-            _dnsIdController.text = dns.nextDnsConfigId;
-            _dnsCustomController.text = dns.customHostname;
-          }
         });
-      }
-      // DNS batch: adopt the LIVE host when the saved prefs disagree
-      // with the device — a host set by the retired Config-tab dialog
-      // (which never persisted) or from outside the app. The device
-      // already enforces that host, so adopting only records the
-      // truth; it changes no enforcement and needs no gate.
-      if (dnsState != null && dnsState.isSpecifiedHost) {
-        final live = DnsProtection.fromLiveHost(dnsState.hostname);
-        if (dns == null || !dns.enabled || dns.hostname != live.hostname) {
-          try {
-            await widget.controller.config.setDnsProtection(live);
-            if (mounted) {
-              setState(() {
-                _dns = live;
-                _dnsIdController.text = live.nextDnsConfigId;
-                _dnsCustomController.text = live.customHostname;
-              });
-            }
-          } catch (_) {
-            // Best-effort: the card still shows the live host below.
-          }
-        }
       }
     } catch (e) {
       if (mounted) setState(() => _error = e);
@@ -235,205 +168,6 @@ class _BrowserRestrictionsScreenState extends State<BrowserRestrictionsScreen> {
       }
     }
   }
-
-  /// Maps a DNS-apply failure to the message the user sees: the REAL
-  /// reason, not a generic "failed". The native side surfaces the DPM
-  /// result code as `verifiedState` (2 = HOST_NOT_SERVING, 1 =
-  /// FAILURE); a timeout is its own message; anything else carries
-  /// the numeric code so the failure is never anonymous.
-  String _dnsFailureMessage(Object e, AppLocalizations l10n) {
-    if (e is TimeoutException) return l10n.dnsApplyTimeout;
-    if (e is PrivilegedException) {
-      final code = e.details['verifiedState'];
-      if (code == 2 || e.message.contains('result code 2')) {
-        return l10n.dnsNotServing;
-      }
-      if (code is num) return l10n.dnsApplyFailedCode(code.toInt());
-      return l10n.dnsApplyFailed;
-    }
-    return l10n.dnsApplyFailed;
-  }
-
-  /// True when the failure is the DPM "host not serving" result — the
-  /// retryable one (the system often reports it for a while after
-  /// provisioning, then the same host applies fine).
-  bool _isHostNotServing(Object e) {
-    if (e is PrivilegedException) {
-      return e.details['verifiedState'] == 2 ||
-          e.message.contains('result code 2');
-    }
-    return false;
-  }
-
-  /// One channel apply with automatic retry on HOST_NOT_SERVING: up to
-  /// 4 attempts (delays 2s/5s/8s, 20s timeout each) — the "fails at
-  /// first, works after a while" case from item 3. Disabling (reset
-  /// to opportunistic) never retries: it sets no host, so the code
-  /// cannot apply to it. Any other failure returns at once. Throws
-  /// the last failure.
-  Future<PrivateDnsState> _applyDnsWithRetry(DnsProtection next) async {
-    if (!next.enabled) {
-      return widget.controller.channel
-          .resetPrivateDns()
-          .timeout(const Duration(seconds: 20));
-    }
-    const delays = [
-      Duration.zero,
-      Duration(seconds: 2),
-      Duration(seconds: 5),
-      Duration(seconds: 8),
-    ];
-    Object? lastError;
-    for (var i = 0; i < delays.length; i++) {
-      if (i > 0) {
-        if (mounted) setState(() => _dnsRetrying = true);
-        await Future.delayed(delays[i]);
-      }
-      try {
-        return await widget.controller.channel
-            .setPrivateDns(next.hostname!)
-            .timeout(const Duration(seconds: 20));
-      } catch (e) {
-        lastError = e;
-        if (!_isHostNotServing(e)) rethrow;
-      }
-    }
-    throw lastError!;
-  }
-
-  /// Applies a DNS-protection selection: the channel call runs FIRST
-  /// and the preference is saved only after the verified native reply,
-  /// so the saved flag can never claim a state the device is not in.
-  /// Enabling is a tightening (direct); disabling is a loosening
-  /// (recovery-gated, like unsuspending a browser).
-  ///
-  /// On failure the mapped reason is shown INLINE under the provider
-  /// list (with a Retry button) instead of a one-shot error dialog —
-  /// the dialog's generic message is what hid the cause in item 3.
-  Future<void> _applyDns(DnsProtection next) async {
-    if (_dnsBusy) return;
-    if (next.enabled && !next.isValid) {
-      if (mounted) {
-        showInfoSnackBar(
-          context,
-          next.provider == DnsProvider.custom
-              ? context.l10n.dnsInvalidHostname
-              : context.l10n.dnsInvalidConfigId,
-        );
-      }
-      return;
-    }
-
-    Future<void> apply() async {
-      if (!mounted) return;
-      _dnsPending = next;
-      setState(() {
-        _dnsBusy = true;
-        _dnsError = null;
-        _dnsRetrying = false;
-      });
-      try {
-        final state = await _applyDnsWithRetry(next);
-        await widget.controller.config.setDnsProtection(next);
-        if (mounted) {
-          setState(() {
-            _dns = next;
-            _dnsState = state;
-            _dnsPending = null;
-            _dnsError = null;
-            _dnsRetrying = false;
-          });
-          showInfoSnackBar(
-            context,
-            next.enabled
-                ? context.l10n.dnsApplied
-                : context.l10n.dnsTurnedOff,
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          setState(() {
-            _dnsError = _dnsFailureMessage(e, context.l10n);
-            _dnsRetrying = false;
-          });
-        }
-      } finally {
-        if (mounted) setState(() => _dnsBusy = false);
-      }
-    }
-
-    if (!next.enabled && (_dns?.enabled ?? false)) {
-      await runLoosening(context, widget.controller, apply);
-    } else {
-      await apply();
-    }
-  }
-
-  /// Re-applies the selection the last apply attempted (the inline
-  /// Retry button). Falls back to the current verified selection.
-  Future<void> _retryDns() async {
-    final pending = _dnsPending ?? _dns ?? const DnsProtection();
-    await _applyDns(pending);
-  }
-
-  Future<void> _toggleDns(bool value) async {
-    final current = _dns ?? const DnsProtection();
-    await _applyDns(current.copyWith(enabled: value));
-  }
-
-  /// Provider switch: while protection is on it re-applies at once
-  /// with the new provider's hostname; while off it only persists the
-  /// choice. A switch to NextDNS without an ID is refused, so the
-  /// saved selection can never name a hostname that does not exist.
-  Future<void> _selectDnsProvider(DnsProvider provider) async {
-    final current = _dns ?? const DnsProtection();
-    if (current.provider == provider) return;
-    final next = current.copyWith(provider: provider);
-    if (next.enabled) {
-      await _applyDns(next);
-    } else {
-      await widget.controller.config.setDnsProtection(next);
-      if (mounted) setState(() => _dns = next);
-    }
-  }
-
-  /// NextDNS configuration ID, applied on submit: while protection is
-  /// on with NextDNS it re-applies at once; otherwise it only persists.
-  Future<void> _submitDnsConfigId(String value) async {
-    final current = _dns ?? const DnsProtection();
-    final next = current.copyWith(nextDnsConfigId: value.trim());
-    if (next.enabled && next.provider == DnsProvider.nextdns) {
-      await _applyDns(next);
-    } else {
-      await widget.controller.config.setDnsProtection(next);
-      if (mounted) setState(() => _dns = next);
-    }
-  }
-
-  /// Custom DNS hostname, applied on submit: while protection is on
-  /// with Custom it re-applies at once; otherwise it only persists.
-  /// An invalid hostname is refused (with the reason) so the saved
-  /// selection can never name a hostname that does not exist.
-  Future<void> _submitDnsCustomHost(String value) async {
-    final current = _dns ?? const DnsProtection();
-    final next = current.copyWith(customHostname: value.trim());
-    if (next.enabled && next.provider == DnsProvider.custom) {
-      await _applyDns(next);
-    } else {
-      await widget.controller.config.setDnsProtection(next);
-      if (mounted) setState(() => _dns = next);
-    }
-  }
-
-  /// The display name of a provider for the shortcut-card subtitle.
-  String _dnsProviderName(DnsProvider provider, AppLocalizations l10n) =>
-      switch (provider) {
-        DnsProvider.nextdns => l10n.dnsProviderNextdns,
-        DnsProvider.cleanBrowsing => l10n.dnsProviderCleanbrowsing,
-        DnsProvider.cloudflare => l10n.dnsProviderCloudflare,
-        DnsProvider.adguard => l10n.dnsProviderAdguard,
-        DnsProvider.custom => l10n.dnsCustom,
-      };
 
   Future<void> _editList(BlockedList? existing) async {
     final titleC = TextEditingController(text: existing?.title ?? '');
@@ -616,36 +350,6 @@ class _BrowserRestrictionsScreenState extends State<BrowserRestrictionsScreen> {
                 // Batch G, item 6: the torrent card moved to the
                 // Config tab (Settings) — torrent clients have
                 // nothing to do with browsers.
-                // Batch DNS: compact shortcut to the full DNS card
-                // below the blocklists — the state at a glance, one
-                // tap scrolls to the controls.
-                const SizedBox(height: 12),
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.shield_outlined),
-                    title: Text(l10n.dnsProtectionTitle),
-                    subtitle: Text(
-                      _dns == null
-                          ? ''
-                          : _dns!.enabled
-                              ? '${l10n.dnsProtectionEnabled} — ${_dnsProviderName(_dns!.provider, l10n)}'
-                              : l10n.dnsProtectionDisabled,
-                    ),
-                    trailing: TextButton(
-                      onPressed: () {
-                        final ctx = _dnsCardKey.currentContext;
-                        if (ctx != null) {
-                          Scrollable.ensureVisible(
-                            ctx,
-                            duration: const Duration(milliseconds: 300),
-                          );
-                        }
-                      },
-                      child: Text(l10n.dnsSettings),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
                 SectionCard(
                   title: l10n.blocklistsSection,
                   children: [
@@ -680,198 +384,6 @@ class _BrowserRestrictionsScreenState extends State<BrowserRestrictionsScreen> {
                           ),
                           onTap: () => _editList(l),
                         ),
-                  ],
-                ),
-                // Batch DNS: the full DNS-protection card — switch,
-                // provider choice (both inside the app), NextDNS ID,
-                // verified native state and the honest note that
-                // filtering is domain-level and device-wide.
-                const SizedBox(height: 12),
-                SectionCard(
-                  key: _dnsCardKey,
-                  title: l10n.dnsProtectionTitle,
-                  children: [
-                    SwitchListTile(
-                      title: Text(l10n.dnsProtectionTitle),
-                      subtitle: Text(
-                        _dnsState?.hostname != null
-                            ? l10n.dnsCurrentHost(_dnsState!.hostname!)
-                            : l10n.dnsNotSet,
-                      ),
-                      value: _dns?.enabled ?? false,
-                      onChanged:
-                          _dnsBusy || _dns == null ? null : _toggleDns,
-                    ),
-                    RadioGroup<DnsProvider>(
-                      groupValue:
-                          _dns?.provider ?? DnsProvider.cleanBrowsing,
-                      onChanged: (v) {
-                        if (_dnsBusy || _dns == null || v == null) return;
-                        _selectDnsProvider(v);
-                      },
-                      child: Column(
-                        children: [
-                          RadioListTile<DnsProvider>(
-                            title: Text(l10n.dnsProviderNextdns),
-                            subtitle: Text(l10n.dnsProviderNextdnsNote),
-                            value: DnsProvider.nextdns,
-                          ),
-                          if ((_dns?.provider ??
-                                      DnsProvider.cleanBrowsing) ==
-                                  DnsProvider.nextdns)
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Padding(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    16,
-                                    0,
-                                    16,
-                                    8,
-                                  ),
-                                  child: TextField(
-                                    controller: _dnsIdController,
-                                    decoration: InputDecoration(
-                                      labelText: l10n.dnsConfigIdLabel,
-                                      hintText: l10n.dnsConfigIdHint,
-                                      helperText: _dnsIdController.text
-                                              .trim()
-                                              .isEmpty
-                                          ? null
-                                          : l10n.dnsConfigIdHostname(
-                                              _dnsIdController.text.trim(),
-                                            ),
-                                    ),
-                                    enabled: !_dnsBusy,
-                                    onChanged: (_) => setState(() {}),
-                                    onSubmitted: _submitDnsConfigId,
-                                  ),
-                                ),
-                                // In-app NextDNS setup guide (user
-                                // request 14:30): the steps live in
-                                // the app itself, next to the ID field.
-                                Padding(
-                                  padding: const EdgeInsets.fromLTRB(
-                                    16,
-                                    0,
-                                    16,
-                                    8,
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        l10n.dnsNextdnsHowTitle,
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .titleSmall
-                                            ?.copyWith(
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(l10n.dnsNextdnsStep1),
-                                      Text(l10n.dnsNextdnsStep2),
-                                      Text(l10n.dnsNextdnsStep3),
-                                      Text(l10n.dnsNextdnsStep4),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          RadioListTile<DnsProvider>(
-                            title: Text(l10n.dnsProviderCleanbrowsing),
-                            subtitle:
-                                Text(l10n.dnsProviderCleanbrowsingNote),
-                            value: DnsProvider.cleanBrowsing,
-                          ),
-                          RadioListTile<DnsProvider>(
-                            title: Text(l10n.dnsProviderCloudflare),
-                            subtitle:
-                                Text(l10n.dnsProviderCloudflareNote),
-                            value: DnsProvider.cloudflare,
-                          ),
-                          RadioListTile<DnsProvider>(
-                            title: Text(l10n.dnsProviderAdguard),
-                            subtitle: Text(l10n.dnsProviderAdguardNote),
-                            value: DnsProvider.adguard,
-                          ),
-                          RadioListTile<DnsProvider>(
-                            title: Text(l10n.dnsCustom),
-                            subtitle: Text(l10n.dnsProviderCustomNote),
-                            value: DnsProvider.custom,
-                          ),
-                          if ((_dns?.provider ??
-                                      DnsProvider.cleanBrowsing) ==
-                                  DnsProvider.custom)
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                16,
-                                0,
-                                16,
-                                8,
-                              ),
-                              child: TextField(
-                                controller: _dnsCustomController,
-                                decoration: InputDecoration(
-                                  labelText: l10n.dnsHostnameLabel,
-                                  hintText: l10n.dnsHostnameHint,
-                                  helperText:
-                                      _dnsCustomController.text.trim().isEmpty
-                                      ? null
-                                      : _dnsCustomController.text.trim(),
-                                  errorText:
-                                      _dnsCustomController.text.isNotEmpty &&
-                                          !DnsProtection.isValidCustomHostname(
-                                            _dnsCustomController.text.trim(),
-                                          )
-                                      ? l10n.dnsInvalidHostname
-                                      : null,
-                                ),
-                                enabled: !_dnsBusy,
-                                onChanged: (_) => setState(() {}),
-                                onSubmitted: _submitDnsCustomHost,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                    // The last apply's real failure reason, with a
-                    // Retry button (the one-shot error dialog's generic
-                    // message is what hid the cause in item 3).
-                    if (_dnsRetrying)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                        child: Text(l10n.dnsRetrying),
-                      ),
-                    if (_dnsError != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: Text(
-                                _dnsError!,
-                                style: TextStyle(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.error,
-                                ),
-                              ),
-                            ),
-                            TextButton(
-                              onPressed: _dnsBusy ? null : _retryDns,
-                              child: Text(l10n.dnsRetryApply),
-                            ),
-                          ],
-                        ),
-                      ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                      child: Text(l10n.dnsProtectionNote),
-                    ),
                   ],
                 ),
                 const SizedBox(height: 16),

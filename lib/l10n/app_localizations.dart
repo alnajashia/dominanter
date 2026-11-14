@@ -1856,18 +1856,6 @@ abstract class AppLocalizations {
   /// **'Disabled'**
   String get dnsProtectionDisabled;
 
-  /// No description provided for @dnsProviderNextdns.
-  ///
-  /// In en, this message translates to:
-  /// **'NextDNS'**
-  String get dnsProviderNextdns;
-
-  /// No description provided for @dnsProviderNextdnsNote.
-  ///
-  /// In en, this message translates to:
-  /// **'Your own blocklist (managed in the NextDNS dashboard)'**
-  String get dnsProviderNextdnsNote;
-
   /// No description provided for @dnsProviderCleanbrowsing.
   ///
   /// In en, this message translates to:
@@ -1927,54 +1915,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Failed to apply the private DNS host (error code {code}).'**
   String dnsApplyFailedCode(int code);
-
-  /// No description provided for @dnsConfigIdLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'NextDNS configuration ID'**
-  String get dnsConfigIdLabel;
-
-  /// No description provided for @dnsConfigIdHint.
-  ///
-  /// In en, this message translates to:
-  /// **'e.g. abc123'**
-  String get dnsConfigIdHint;
-
-  /// No description provided for @dnsConfigIdHostname.
-  ///
-  /// In en, this message translates to:
-  /// **'Hostname: {id}.dns.nextdns.io'**
-  String dnsConfigIdHostname(String id);
-
-  /// No description provided for @dnsNextdnsHowTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'How do I set up NextDNS?'**
-  String get dnsNextdnsHowTitle;
-
-  /// No description provided for @dnsNextdnsStep1.
-  ///
-  /// In en, this message translates to:
-  /// **'1. Create a free account at nextdns.io (email and password, no card).'**
-  String get dnsNextdnsStep1;
-
-  /// No description provided for @dnsNextdnsStep2.
-  ///
-  /// In en, this message translates to:
-  /// **'2. Copy the configuration ID from the Setup tab in the dashboard.'**
-  String get dnsNextdnsStep2;
-
-  /// No description provided for @dnsNextdnsStep3.
-  ///
-  /// In en, this message translates to:
-  /// **'3. Add sites to the Denylist from the Privacy tab, and turn on Block Bypass Methods in Settings.'**
-  String get dnsNextdnsStep3;
-
-  /// No description provided for @dnsNextdnsStep4.
-  ///
-  /// In en, this message translates to:
-  /// **'4. Paste the ID in the field above and turn protection on — Azm sets it and locks it.'**
-  String get dnsNextdnsStep4;
 
   /// No description provided for @torrentTitle.
   ///
@@ -2102,12 +2042,6 @@ abstract class AppLocalizations {
   /// **'Uninstall allowed for suspended apps'**
   String get autoBlockUninstallOff;
 
-  /// No description provided for @dnsInvalidConfigId.
-  ///
-  /// In en, this message translates to:
-  /// **'Enter a valid NextDNS configuration ID'**
-  String get dnsInvalidConfigId;
-
   /// No description provided for @dnsCurrentHost.
   ///
   /// In en, this message translates to:
@@ -2119,6 +2053,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Private DNS is not set'**
   String get dnsNotSet;
+
+  /// No description provided for @dnsOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Off'**
+  String get dnsOff;
 
   /// No description provided for @dnsApplied.
   ///
@@ -2647,6 +2587,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Immediate, inside a recovery session — every restriction this app enforces stops at once.'**
   String get removeOwnerNowSub;
+
+  /// No description provided for @uninstallAzm.
+  ///
+  /// In en, this message translates to:
+  /// **'Uninstall Azm'**
+  String get uninstallAzm;
+
+  /// No description provided for @uninstallAzmSub.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove Azm from this phone — opens the system uninstaller.'**
+  String get uninstallAzmSub;
+
+  /// No description provided for @uninstallAzmConfirmTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Uninstall Azm?'**
+  String get uninstallAzmConfirmTitle;
+
+  /// No description provided for @uninstallAzmConfirmBody.
+  ///
+  /// In en, this message translates to:
+  /// **'This opens the system uninstaller for Azm. If you confirm there, the app is removed from this phone. Any restriction it enforces stops with it — make sure the Device Owner removal above is finished first.'**
+  String get uninstallAzmConfirmBody;
+
+  /// No description provided for @uninstallNotStarted.
+  ///
+  /// In en, this message translates to:
+  /// **'The system uninstaller could not be opened.'**
+  String get uninstallNotStarted;
 
   /// No description provided for @forcedIdleSub.
   ///
@@ -4457,8 +4427,32 @@ abstract class AppLocalizations {
   /// No description provided for @lockdownDuration.
   ///
   /// In en, this message translates to:
-  /// **'Duration (minutes)'**
+  /// **'Duration'**
   String get lockdownDuration;
+
+  /// No description provided for @lockdownDurationTotalMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Total minutes'**
+  String get lockdownDurationTotalMinutes;
+
+  /// No description provided for @lockdownDurationHours.
+  ///
+  /// In en, this message translates to:
+  /// **'Hours'**
+  String get lockdownDurationHours;
+
+  /// No description provided for @lockdownDurationMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Minutes'**
+  String get lockdownDurationMinutes;
+
+  /// No description provided for @lockdownDurationSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Seconds'**
+  String get lockdownDurationSeconds;
 
   /// No description provided for @lockdownScope.
   ///
@@ -6031,6 +6025,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Scratch to reveal'**
   String get scratchToReveal;
+
+  /// No description provided for @removalStepLockdown.
+  ///
+  /// In en, this message translates to:
+  /// **'End active lockdown'**
+  String get removalStepLockdown;
+
+  /// No description provided for @removalStepRemoveAdmin.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove Device Admin'**
+  String get removalStepRemoveAdmin;
+
+  /// No description provided for @removalStepStopAccessibility.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop accessibility service'**
+  String get removalStepStopAccessibility;
+
+  /// No description provided for @removalStepSkipped.
+  ///
+  /// In en, this message translates to:
+  /// **'skipped — requires Device Owner'**
+  String get removalStepSkipped;
+
+  /// No description provided for @removalReprovisionGuidance.
+  ///
+  /// In en, this message translates to:
+  /// **'The owner was already removed earlier, but some policies can only be cleared by re-provisioning as Device Owner (via Shizuku) and then removing again.'**
+  String get removalReprovisionGuidance;
+
+  /// No description provided for @removalColourPreflightTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Colour restore may fail'**
+  String get removalColourPreflightTitle;
+
+  /// No description provided for @removalColourPreflightBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Colour modes are currently enforced, but the WRITE_SECURE_SETTINGS permission is not granted (Shizuku is stopped). Restart Shizuku and re-grant the permission first, then remove again — or continue anyway.'**
+  String get removalColourPreflightBody;
+
+  /// No description provided for @removalColourPreflightContinue.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue anyway'**
+  String get removalColourPreflightContinue;
+
+  /// No description provided for @authBiometricLockedOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Biometrics are locked out after failed attempts — use your device PIN, pattern or password to unlock.'**
+  String get authBiometricLockedOut;
+
+  /// No description provided for @buildStamp.
+  ///
+  /// In en, this message translates to:
+  /// **'Build'**
+  String get buildStamp;
 }
 
 class _AppLocalizationsDelegate

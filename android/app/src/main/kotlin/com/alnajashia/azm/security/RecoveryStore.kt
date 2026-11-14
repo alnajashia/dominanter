@@ -121,17 +121,27 @@ object RecoveryStore {
      * Whether a delayed forced removal has been filed AND its countdown
      * is complete (Batch E review finding F-E2-1). The countdown state
      * is the Dart-persisted JSON in the `recovery_prefs` file
-     * (`{'active': bool, 'accumulatedMs': int}` — see
+     * (`{'active': bool, 'accumulatedMs': int,
+     * 'startedAtWallMs': int, 'startedAtElapsedMs': int}` — see
      * `lib/domain/recovery.dart` ForcedRemoval.toJson and
-     * `lib/data/config_store.dart` setForcedRemoval): due means active
-     * and accumulated >= the 24-hour delay. A missing, corrupt, or
-     * incomplete record is NOT due (fail closed — the seal still
-     * refuses). Read natively from the persisted record, never from a
-     * client-asserted flag, so the seal exemption for a due countdown
-     * is decided the same way as the recovery session. Note the two
-     * files: the session lives in `recovery_secure` (this object's
-     * [prefs]); the countdown lives in `recovery_prefs`
-     * ([SettingsStore.PREFS_RECOVERY_STATE]).
+     * `lib/data/config_store.dart` setForcedRemoval). Due means active
+     * and EITHER leg holds:
+     *  - accumulated >= the 24-hour delay (the 30 s Dart tick), or
+     *  - both clocks have advanced a full delay since filing
+     *    (item 6, 2026-11-14): the tick stalls when the app process
+     *    is killed, the clocks do not. The elapsed leg reboots
+     *    safely: when the current elapsed is smaller than the
+     *    filed one the device rebooted, so the elapsed age is the
+     *    current value (time since boot), not a wrapped difference.
+     *    Both clocks must agree, so a single moved clock cannot
+     *    complete the countdown early.
+     * A missing, corrupt, or incomplete record is NOT due (fail
+     * closed — the seal still refuses). Read natively from the
+     * persisted record, never from a client-asserted flag, so the
+     * seal exemption for a due countdown is decided the same way as
+     * the recovery session. Note the two files: the session lives
+     * in `recovery_secure` (this object's [prefs]); the countdown
+     * lives in `recovery_prefs` ([SettingsStore.PREFS_RECOVERY_STATE]).
      */
     fun isForcedRemovalDue(context: Context): Boolean {
         val raw = context.applicationContext
@@ -146,8 +156,17 @@ object RecoveryStore {
             return false
         }
         if (!json.optBoolean("active", false)) return false
+        val delayMs = FORCED_REMOVAL_DELAY_HOURS * 3_600_000L
         val accumulatedMs = json.optLong("accumulatedMs", 0L)
-        return accumulatedMs >= FORCED_REMOVAL_DELAY_HOURS * 3_600_000L
+        if (accumulatedMs >= delayMs) return true
+        val wallMs = json.optLong("startedAtWallMs", -1L)
+        val elapsedMs = json.optLong("startedAtElapsedMs", -1L)
+        if (wallMs <= 0L || elapsedMs < 0L) return false
+        val wallDelta = System.currentTimeMillis() - wallMs
+        val elapsedNow = android.os.SystemClock.elapsedRealtime()
+        val elapsedDelta = if (elapsedNow < elapsedMs) elapsedNow
+        else elapsedNow - elapsedMs
+        return wallDelta >= delayMs && elapsedDelta >= delayMs
     }
 
     /** Constant-time verification against the stored salted hash. */

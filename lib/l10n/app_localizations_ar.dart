@@ -1020,13 +1020,6 @@ class AppLocalizationsAr extends AppLocalizations {
   String get dnsProtectionDisabled => 'متوقفة';
 
   @override
-  String get dnsProviderNextdns => 'NextDNS';
-
-  @override
-  String get dnsProviderNextdnsNote =>
-      'قائمتك الخاصة (تُدار من لوحة تحكم NextDNS)';
-
-  @override
   String get dnsProviderCleanbrowsing => 'CleanBrowsing (فلتر العائلة)';
 
   @override
@@ -1060,36 +1053,6 @@ class AppLocalizationsAr extends AppLocalizations {
   String dnsApplyFailedCode(int code) {
     return 'فشل تطبيق مضيف DNS الخاص (رمز الخطأ $code).';
   }
-
-  @override
-  String get dnsConfigIdLabel => 'رمز إعداد NextDNS';
-
-  @override
-  String get dnsConfigIdHint => 'مثال: abc123';
-
-  @override
-  String dnsConfigIdHostname(String id) {
-    return 'اسم المضيف: $id.dns.nextdns.io';
-  }
-
-  @override
-  String get dnsNextdnsHowTitle => 'كيف أُعدّ NextDNS؟';
-
-  @override
-  String get dnsNextdnsStep1 =>
-      '١. أنشئ حساباً مجانياً في nextdns.io (بريد وكلمة مرور، بلا بطاقة).';
-
-  @override
-  String get dnsNextdnsStep2 =>
-      '٢. انسخ رمز الإعداد من تبويب Setup في لوحة التحكم.';
-
-  @override
-  String get dnsNextdnsStep3 =>
-      '٣. أضف المواقع إلى Denylist من تبويب Privacy، وفعّل Block Bypass Methods من Settings.';
-
-  @override
-  String get dnsNextdnsStep4 =>
-      '٤. الصق الرمز في الحقل أعلاه وفعّل الحماية — وسيضبطها عزم ويقفلها.';
 
   @override
   String get torrentTitle => 'حظر تطبيقات التورنت';
@@ -1171,15 +1134,15 @@ class AppLocalizationsAr extends AppLocalizations {
       'تم السماح بإلغاء تثبيت التطبيقات المعلَّقة';
 
   @override
-  String get dnsInvalidConfigId => 'أدخل رمز إعداد NextDNS صحيحاً';
-
-  @override
   String dnsCurrentHost(String hostname) {
     return 'المضيف الحالي: $hostname';
   }
 
   @override
   String get dnsNotSet => 'DNS الخاص غير مضبوط';
+
+  @override
+  String get dnsOff => 'إيقاف';
 
   @override
   String get dnsApplied => 'تم تطبيق حماية DNS';
@@ -1487,6 +1450,23 @@ class AppLocalizationsAr extends AppLocalizations {
   @override
   String get removeOwnerNowSub =>
       'إزالة فورية، داخل جلسة استرداد — كل قيد يفرضه هذا التطبيق يتوقف فوراً.';
+
+  @override
+  String get uninstallAzm => 'إلغاء تثبيت عزم';
+
+  @override
+  String get uninstallAzmSub =>
+      'إزالة عزم من هذا الهاتف — يفتح مثبت إلغاء التثبيت في النظام.';
+
+  @override
+  String get uninstallAzmConfirmTitle => 'إلغاء تثبيت عزم؟';
+
+  @override
+  String get uninstallAzmConfirmBody =>
+      'سيفتح هذا مثبت إلغاء التثبيت في النظام لعزم. إذا أكدت هناك، يُزال التطبيق من الهاتف. وأي قيد يفرضه يتوقف معه — تأكد أولاً من إتمام إزالة مالك الجهاز أعلاه.';
+
+  @override
+  String get uninstallNotStarted => 'تعذّر فتح مثبت إلغاء التثبيت في النظام.';
 
   @override
   String get forcedIdleSub =>
@@ -2554,7 +2534,19 @@ class AppLocalizationsAr extends AppLocalizations {
   String get lockdownStartTitle => 'بدء إغلاق';
 
   @override
-  String get lockdownDuration => 'المدة (بالدقائق)';
+  String get lockdownDuration => 'المدة';
+
+  @override
+  String get lockdownDurationTotalMinutes => 'إجمالي الدقائق';
+
+  @override
+  String get lockdownDurationHours => 'ساعات';
+
+  @override
+  String get lockdownDurationMinutes => 'دقائق';
+
+  @override
+  String get lockdownDurationSeconds => 'ثوانٍ';
 
   @override
   String get lockdownScope => 'ينطبق على';
@@ -3484,4 +3476,37 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get scratchToReveal => 'اخدش للكشف';
+
+  @override
+  String get removalStepLockdown => 'إنهاء الإغلاق النشط';
+
+  @override
+  String get removalStepRemoveAdmin => 'إزالة مسؤول الجهاز';
+
+  @override
+  String get removalStepStopAccessibility => 'إيقاف خدمة الوصول';
+
+  @override
+  String get removalStepSkipped => 'تخطّى — يتطلب مالك الجهاز';
+
+  @override
+  String get removalReprovisionGuidance =>
+      'أُزيل مالك الجهاز سابقاً، لكن بعض السياسات لا يمكن مسحها إلا بإعادة التثبيت كمالك للجهاز (عبر Shizuku) ثم إعادة التفكيك.';
+
+  @override
+  String get removalColourPreflightTitle => 'قد تفشل استعادة الألوان';
+
+  @override
+  String get removalColourPreflightBody =>
+      'أوضاع الألوان مفعّلة حالياً، لكن إذن WRITE_SECURE_SETTINGS غير ممنوح (Shizuku متوقف). أعد تشغيل Shizuku ومنح الإذن أولاً ثم أعد التفكيك — أو تابع على أي حال.';
+
+  @override
+  String get removalColourPreflightContinue => 'متابعة على أي حال';
+
+  @override
+  String get authBiometricLockedOut =>
+      'البصمة مقفلة مؤقتاً بعد محاولات فاشلة — استخدم رمز الجهاز (PIN/النمط/كلمة المرور) للدخول.';
+
+  @override
+  String get buildStamp => 'البناء';
 }

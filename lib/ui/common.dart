@@ -63,6 +63,12 @@ String friendlyError(PrivilegedException e, AppLocalizations l10n) {
       return l10n.errPackageNotFound;
     case 'PERMISSION_DENIED':
       return l10n.errPermissionDenied;
+    case 'AUTH_BIOMETRIC_LOCKED_OUT':
+      return l10n.authBiometricLockedOut;
+    case 'AUTH_FAILED_TO_START':
+      return l10n.authCouldNotStart;
+    case 'UNINSTALL_NOT_STARTED':
+      return l10n.uninstallNotStarted;
     case 'UNSUPPORTED_ANDROID':
       return l10n.errUnsupportedAndroid;
     case 'TIMEOUT':

@@ -1,5 +1,6 @@
 /// DNS filtering for browsers that cannot honour URL restrictions
-/// (Batch DNS, 2026-11-13; unified into ONE card 2026-11-14).
+/// (Batch DNS, 2026-11-13; unified into ONE card 2026-11-14; moved
+/// back to a list in general Settings as a dialog 2026-11-14, item 5).
 ///
 /// Android's Private DNS is a single device-wide setting: it cannot be
 /// scoped to one browser. Enabling it for any unsupported browser
@@ -12,17 +13,19 @@
 /// the radio choice means exactly one provider — Android accepts a
 /// single Private DNS hostname at a time, so "more than one at once"
 /// is impossible, and the UI says so by construction (radio, not
-/// checkboxes). The providers are the union of the two pre-unification
-/// UIs (the Batch DNS card's NextDNS/CleanBrowsing and the Config-tab
-/// dialog's Cloudflare/AdGuard/CleanBrowsing/custom):
+/// checkboxes). The dialog in Settings offers the same list with an
+/// explicit Off choice. NextDNS was removed at the user's request
+/// 2026-11-14: a saved NextDNS selection falls back to CleanBrowsing,
+/// and a live NextDNS hostname is adopted as a Custom hostname (the
+/// host itself stays applied — nothing is silently turned off).
+/// The dialog never refuses a provider choice: picking Custom shows
+/// the hostname field at once, and Apply stays disabled until the
+/// (lowercase-normalised) hostname is valid — the old card refused
+/// the switch itself, so the field could never be reached (item 5).
 ///
 /// * [DnsProvider.cleanBrowsing] — the free Family filter, no account,
 ///   blocks adult content + proxies/VPNs and enforces SafeSearch, but
 ///   cannot apply the user's own blocklists.
-/// * [DnsProvider.nextdns] — applies the user's own denylist (managed
-///   in the NextDNS dashboard) via the profile's configuration ID;
-///   free up to 300,000 queries/month, after which filtering stops
-///   silently until the month resets (fail-open).
 /// * [DnsProvider.cloudflare] — the free Cloudflare Family filter, no
 ///   account: blocks malware and adult content.
 /// * [DnsProvider.adguard] — the free AdGuard Family filter, no
@@ -32,7 +35,6 @@ library;
 
 /// The filtering DNS provider behind DNS protection.
 enum DnsProvider {
-  nextdns,
   cleanBrowsing,
   cloudflare,
   adguard,
@@ -40,8 +42,9 @@ enum DnsProvider {
 
   /// Unknown or absent names fall back to CleanBrowsing — the provider
   /// that works with no setup — matching the constructor default.
+  /// (A saved 'nextdns' name lands here too — NextDNS was removed
+  /// 2026-11-14 at the user's request.)
   static DnsProvider fromName(String? name) => switch (name) {
-    'nextdns' => nextdns,
     'cloudflare' => cloudflare,
     'adguard' => adguard,
     'custom' => custom,
@@ -54,16 +57,11 @@ class DnsProtection {
   const DnsProtection({
     this.enabled = false,
     this.provider = DnsProvider.cleanBrowsing,
-    this.nextDnsConfigId = '',
     this.customHostname = '',
   });
 
   final bool enabled;
   final DnsProvider provider;
-
-  /// The NextDNS configuration ID (the part before `.dns.nextdns.io`),
-  /// e.g. `abc123`. Ignored unless [provider] is [DnsProvider.nextdns].
-  final String nextDnsConfigId;
 
   /// The user-entered hostname for [DnsProvider.custom]. Ignored
   /// unless [provider] is [DnsProvider.custom].
@@ -83,15 +81,12 @@ class DnsProtection {
   static const adguardHostname = 'family.adguard-dns.com';
 
   /// The hostname to set as the device's Private DNS provider, or null
-  /// when nothing can be applied (disabled, or NextDNS without an ID,
-  /// or custom without a valid hostname).
+  /// when nothing can be applied (disabled, or custom without a valid
+  /// hostname).
   String? get hostname {
     if (!enabled) return null;
     return switch (provider) {
       DnsProvider.cleanBrowsing => cleanBrowsingHostname,
-      DnsProvider.nextdns => isValidConfigId(nextDnsConfigId)
-          ? '${nextDnsConfigId.trim()}.dns.nextdns.io'
-          : null,
       DnsProvider.cloudflare => cloudflareHostname,
       DnsProvider.adguard => adguardHostname,
       DnsProvider.custom => isValidCustomHostname(customHostname)
@@ -102,15 +97,6 @@ class DnsProtection {
 
   /// True when the current selection can be applied as-is.
   bool get isValid => !enabled || hostname != null;
-
-  /// The native side rejects blank hostnames and any hostname with a
-  /// space or a slash (`DeviceOwnerManager.setPrivateDns`); mirror that
-  /// rule here so the UI refuses an ID early instead of surfacing a
-  /// native error.
-  static bool isValidConfigId(String id) {
-    final v = id.trim();
-    return v.isNotEmpty && !v.contains(' ') && !v.contains('/');
-  }
 
   /// A custom hostname must be lowercase dot-separated labels with a
   /// TLD of at least two letters (the original dialog's rule,
@@ -123,7 +109,9 @@ class DnsProtection {
   /// it — used when the saved prefs disagree with the live DPM state
   /// (e.g. a host set by the retired Config-tab dialog, which never
   /// persisted). Known hostnames map to their provider; any other
-  /// non-empty hostname is a custom one. Null means "nothing live".
+  /// non-empty hostname is a custom one — including a legacy NextDNS
+  /// hostname (`<id>.dns.nextdns.io`): it stays applied as Custom
+  /// rather than being silently dropped. Null means "nothing live".
   static DnsProtection fromLiveHost(String? hostname) {
     final host = hostname?.trim() ?? '';
     if (host.isEmpty) return const DnsProtection();
@@ -140,40 +128,28 @@ class DnsProtection {
         enabled: true,
         provider: DnsProvider.adguard,
       ),
-      _ => host.endsWith('.dns.nextdns.io')
-          ? DnsProtection(
-              enabled: true,
-              provider: DnsProvider.nextdns,
-              nextDnsConfigId: host.substring(
-                0,
-                host.length - '.dns.nextdns.io'.length,
-              ),
-            )
-          : DnsProtection(
-              enabled: true,
-              provider: DnsProvider.custom,
-              customHostname: host,
-            ),
+      _ => DnsProtection(
+        enabled: true,
+        provider: DnsProvider.custom,
+        customHostname: host,
+      ),
     };
   }
 
   DnsProtection copyWith({
     bool? enabled,
     DnsProvider? provider,
-    String? nextDnsConfigId,
     String? customHostname,
   }) =>
       DnsProtection(
         enabled: enabled ?? this.enabled,
         provider: provider ?? this.provider,
-        nextDnsConfigId: nextDnsConfigId ?? this.nextDnsConfigId,
         customHostname: customHostname ?? this.customHostname,
       );
 
   Map<String, dynamic> toJson() => {
         'enabled': enabled,
         'provider': provider.name,
-        'nextDnsConfigId': nextDnsConfigId,
         'customHostname': customHostname,
       };
 
@@ -181,7 +157,6 @@ class DnsProtection {
       DnsProtection(
         enabled: json['enabled'] as bool? ?? false,
         provider: DnsProvider.fromName(json['provider'] as String?),
-        nextDnsConfigId: json['nextDnsConfigId'] as String? ?? '',
         customHostname: json['customHostname'] as String? ?? '',
       );
 }

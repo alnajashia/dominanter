@@ -22,9 +22,12 @@ import com.alnajashia.azm.data.ColourModesController
 import com.alnajashia.azm.data.SealRules
 import com.alnajashia.azm.data.SettingsStore
 import com.alnajashia.azm.data.SuspensionReason
+import com.alnajashia.azm.focus.FocusScheduleManager
 import com.alnajashia.azm.focus.FocusService
 import com.alnajashia.azm.focus.FocusSessionStore
 import com.alnajashia.azm.focus.FocusStatusNotifier
+import com.alnajashia.azm.lockdown.LockdownManager
+import com.alnajashia.azm.lockdown.LockdownStore
 import com.alnajashia.azm.notifications.UsageWarningNotifier
 import com.alnajashia.azm.shizuku.ShizukuGateway
 
@@ -97,7 +100,10 @@ object DeviceOwnerManager {
         if (!isOwner && isAdmin) {
             try {
                 dpm.removeActiveAdmin(adminComponent(context))
-                var retries = 10
+                // 5 s poll (was 1 s): the admin settles asynchronously
+                // in system_server, and a 1 s probe reported a settling
+                // admin as stuck (deadlock re-audit F6 / fix G).
+                var retries = 50
                 while (retries > 0 && isAdminActive(context)) {
                     Thread.sleep(100)
                     retries--
@@ -123,15 +129,38 @@ object DeviceOwnerManager {
         )
     }
 
-    /** One teardown step's outcome (v1.0.5 fix #6). */
-    data class TeardownStep(val id: String, val ok: Boolean, val detail: String) {
-        fun toMap(): Map<String, Any?> = mapOf("id" to id, "ok" to ok, "detail" to detail)
+    /** One teardown step's outcome (v1.0.5 fix #6). `skipped` marks a
+     * step that could not run because the app is no longer Device
+     * Owner (half-torn-down re-run): it is neither a pass nor a
+     * failure — the step's work needs owner power that only
+     * re-provisioning restores. */
+    data class TeardownStep(
+        val id: String,
+        val ok: Boolean,
+        val detail: String,
+        val skipped: Boolean = false,
+    ) {
+        fun toMap(): Map<String, Any?> = mapOf(
+            "id" to id,
+            "ok" to ok,
+            "detail" to detail,
+            "skipped" to skipped,
+        )
     }
 
-    /** The full removal outcome: ordered per-step results + the verified owner state. */
-    data class RemovalReport(val isDeviceOwner: Boolean, val steps: List<TeardownStep>) {
+    /** The full removal outcome: ordered per-step results + the
+     * verified owner state. `startedAsOwner` records whether the run
+     * began as Device Owner — a re-run in the half-torn-down state
+     * starts with it false, and the outcome dialog then says honestly
+     * that owner-only residue needs re-provisioning first. */
+    data class RemovalReport(
+        val isDeviceOwner: Boolean,
+        val steps: List<TeardownStep>,
+        val startedAsOwner: Boolean,
+    ) {
         fun toMap(): Map<String, Any?> = mapOf(
             "isDeviceOwner" to isDeviceOwner,
+            "startedAsOwner" to startedAsOwner,
             "steps" to steps.map { it.toMap() },
         )
     }
@@ -157,6 +186,14 @@ object DeviceOwnerManager {
      *     accessibility-loss lockdown and policy re-application for the
      *     whole teardown (the intentional-disable guard is armed too,
      *     as a second line of defence).
+     *  1b. `lockdown` — end any active full-phone lockdown while the
+     *     app is still owner (its DPM releases need owner power) and
+     *     cancel the armed lockdown window-start alarms and the
+     *     focus-schedule / snooze / pre-reminder alarms. A lockdown
+     *     active at removal time would otherwise survive the teardown
+     *     with its record, end alarm and kiosk allowlist still armed
+     *     and no automatic exit (the end receiver is inert forever
+     *     once the removal flag is permanent).
      *  2. `focus` — stop the focus service, end any focus session
      *     (releases its suspensions/restrictions and cancels its
      *     alarm), cancel the focus notification.
@@ -192,7 +229,10 @@ object DeviceOwnerManager {
      *  12. `removeAdmin` — drop Device Admin immediately after
      *     clearing owner (Batch D root cause 1: `clearDeviceOwnerApp`
      *     alone leaves the admin active, and an active admin blocks
-     *     uninstall for ~3 minutes).
+     *     uninstall for ~3 minutes). A bounded retry ladder (3 s,
+     *     re-issue, 5 s, re-issue, 5 s = 13 s) that THROWS with the
+     *     waited time when the admin never clears — a stuck admin is
+     *     a first-class failure now, never a silent false-success.
      *  13. `tornDown` — re-assert the permanent torn-down flag.
      *  14. `stopAccessibility` — stop the accessibility service
      *     cleanly (its `onUnbind` lockdown is already disarmed by
@@ -208,10 +248,24 @@ object DeviceOwnerManager {
      *     bundle (UserManager, no admin needed), screen capture
      *     allowed, and no app notification still posted. Any residue
      *     fails this step, so the result dialog can never print a
-     *     clean success while a surface persists. (Once ownership is
-     *     surrendered the app can no longer clear residue itself —
-     *     the dialog says so, and the Config tab's residue check says
-     *     re-provisioning is the route back to clearing power.)
+     *     clean success while a surface persists. A surviving
+     *     lockdown record is residue too (step 1b ends it while still
+     *     owner). (Once ownership is surrendered the app can no longer
+     *     clear residue itself — the dialog says so, and the Config
+     *     tab's residue check says re-provisioning is the route back
+     *     to clearing power.)
+     *
+     * Worst case (deadlock re-audit fix E): the native call is bounded
+     * by construction — clearOwner 2 s + removeAdmin 13 s + verify 2 s
+     * + the per-package censuses (chunked, bounded by the installed-app
+     * count) ≈ 25–30 s on a several-hundred-app device. The Dart side
+     * raises its display cap to 45 s so the spinner never stops
+     * polling while a legitimate teardown is still running, and a
+     * process kill mid-teardown is recoverable: step 1's flags are
+     * committed first and the teardown is idempotent, so the user can
+     * re-run it (the half-torn-down re-run path, whose owner-only
+     * steps report `skipped` and whose dialog names re-provisioning
+     * as the route back).
      *  16. `flagClear` — a no-op by design (Batch D): the removal
      *     disarm is PERMANENT. The flag is never cleared in the
      *     teardown — clearing it here would re-arm the accessibility
@@ -237,6 +291,9 @@ object DeviceOwnerManager {
         if (!isDeviceOwner(context) && !isAdminActive(context)) {
             requireOwner(context)
         }
+        // Whether this run began as Device Owner (see RemovalReport):
+        // a half-torn-down re-run starts with it false.
+        val startedAsOwner = isDeviceOwner(context)
         val dpm = dpm(context)
         val admin = adminComponent(context)
         val steps = mutableListOf<TeardownStep>()
@@ -249,12 +306,38 @@ object DeviceOwnerManager {
             }
         }
 
+        // A step that could not run for lack of owner power: recorded
+        // distinctly (skipped = true) instead of a vacuous pass or a
+        // misleading failure.
+        fun stepSkipped(id: String, detail: String) {
+            steps += TeardownStep(id, true, detail, skipped = true)
+        }
+
         // (1) Disarm first — before anything stops or changes state.
         step("flag") {
             SettingsStore.setProtectionTornDown(true)
             SettingsStore.setRemovalInProgress(true)
             SettingsStore.armIntentionalAccessibilityDisable()
             "lockdown and policy re-application disarmed"
+        }
+
+        // (1b) End a live full-phone lockdown FIRST, while the app is
+        // still owner (its DPM releases need owner power). A lockdown
+        // active at removal time would otherwise survive the teardown:
+        // its record, end alarm and (Tier 2) kiosk allowlist stay
+        // armed, and the end receiver is inert forever afterwards
+        // because the removal flag is permanent. Also cancels the armed
+        // lockdown window-start alarms and the focus-schedule / snooze /
+        // pre-reminder alarms (the stored schedules are kept; the
+        // receiver guards make them inert after teardown).
+        step("lockdown") {
+            runCatching { LockdownStore.end(context) }
+            runCatching { LockdownManager.cancelAllWindows(context) }
+            runCatching { FocusScheduleManager.cancelAllAlarms(context) }
+            if (LockdownStore.activeLockdown(context) != null) {
+                throw PrivException.dpmFailed("active lockdown could not be ended")
+            }
+            "active lockdown ended; lockdown and focus alarms cancelled"
         }
 
         // (2) Focus service + session + alarm + notification + impulse + seals.
@@ -274,7 +357,17 @@ object DeviceOwnerManager {
         // Zeroed explicitly and verified by their getters while we
         // still have owner power; after clearDeviceOwnerApp they could
         // no longer be changed from inside the app at all.
-        step("policies") {
+        if (!isDeviceOwner(context)) {
+            // Half-torn-down re-run: device policies can only be reset
+            // by a Device Owner. Record the step as skipped, not as a
+            // pass or a failure — screen capture is still checked by
+            // the final verification step, which can read it unprivileged.
+            stepSkipped(
+                "policies",
+                "device policies skipped — not Device Owner; " +
+                    "re-provision as Device Owner to clear them",
+            )
+        } else step("policies") {
             val failed = mutableListOf<String>()
             val isOwner = isDeviceOwner(context)
             runCatching { dpm.setScreenCaptureDisabled(admin, false) }
@@ -353,7 +446,13 @@ object DeviceOwnerManager {
         ).map { it.packageName }.filter { it != context.packageName }
 
         // (5) Unsuspend everything that is actually suspended.
-        step("unsuspend") {
+        if (!isDeviceOwner(context)) {
+            stepSkipped(
+                "unsuspend",
+                "suspensions skipped — not Device Owner; " +
+                    "re-provision as Device Owner to clear them",
+            )
+        } else step("unsuspend") {
             val suspended = installedNames.filter { pkg ->
                 try { dpm.isPackageSuspended(admin, pkg) } catch (_: Exception) { false }
             }
@@ -394,7 +493,13 @@ object DeviceOwnerManager {
                     emptyList()
                 }
             } else {
-                emptyList()
+                // Not owner: the admin bundle is unreadable, but the
+                // calling user's EFFECTIVE restrictions are readable
+                // without any admin rights (the same read the Dart
+                // probe uses) — the honest residue list for this
+                // re-run, so the final verification can still fail
+                // on them instead of iterating an empty list.
+                getUserRestrictionResidue(context)
             }
             residueKeys = active
             val toClear = if (isOwner) (allRestrictionKeys() + active).distinct() else active
@@ -435,7 +540,13 @@ object DeviceOwnerManager {
         }
 
         // (7) Unhide everything hidden (probes ∪ our persisted records).
-        step("unhide") {
+        if (!isDeviceOwner(context)) {
+            stepSkipped(
+                "unhide",
+                "hidden apps skipped — not Device Owner; " +
+                    "re-provision as Device Owner to restore them",
+            )
+        } else step("unhide") {
             val hidden = (installedNames.filter { pkg ->
                 try { dpm.isApplicationHidden(admin, pkg) } catch (_: Exception) { false }
             } + SettingsStore.hiddenPackages()).distinct()
@@ -461,7 +572,13 @@ object DeviceOwnerManager {
         }
 
         // (8) Lift every uninstall block.
-        step("uninstallBlocks") {
+        if (!isDeviceOwner(context)) {
+            stepSkipped(
+                "uninstallBlocks",
+                "uninstall blocks skipped — not Device Owner; " +
+                    "re-provision as Device Owner to lift them",
+            )
+        } else step("uninstallBlocks") {
             val blocked = installedNames.filter { pkg ->
                 try { dpm.isUninstallBlocked(admin, pkg) } catch (_: Exception) { false }
             }
@@ -488,7 +605,13 @@ object DeviceOwnerManager {
 
         // (9) Clear the per-app restriction bundles we applied
         // (browser URL blocklists live on the URLBlocklist-declaring apps).
-        step("appRestrictions") {
+        if (!isDeviceOwner(context)) {
+            stepSkipped(
+                "appRestrictions",
+                "per-app restriction bundles skipped — not Device Owner; " +
+                    "re-provision as Device Owner to clear them",
+            )
+        } else step("appRestrictions") {
             val capable = listRestrictionCapableApps(context, listOf("URLBlocklist"))
                 .map { it["packageName"] as String }
             var cleared = 0
@@ -546,42 +669,69 @@ object DeviceOwnerManager {
         step("clearOwner") {
             if (isDeviceOwner(context)) {
                 dpm.clearDeviceOwnerApp(context.packageName)
+                var waitedMs = 0L
                 var retries = 20
                 while (retries > 0 && isDeviceOwner(context)) {
                     Thread.sleep(100)
+                    waitedMs += 100
                     retries--
                 }
                 ownerAfter = isDeviceOwner(context)
                 if (ownerAfter) {
-                    throw PrivException.dpmFailed("Still Device Owner after clearDeviceOwnerApp")
+                    throw PrivException.dpmFailed(
+                        "Still Device Owner after clearDeviceOwnerApp " +
+                            "(waited ${waitedMs}ms)",
+                    )
                 }
-                "device owner cleared and verified"
+                "device owner cleared and verified after ${waitedMs}ms"
             } else {
                 ownerAfter = false
                 "device owner already cleared"
             }
         }
 
-        // (12) Drop Device Admin immediately after clearing owner (Batch D root cause 1).
+        // (12) Drop Device Admin immediately after clearing owner
+        // (Batch D root cause 1). removeActiveAdmin only ASKS
+        // system_server to remove the admin — the call returning does
+        // NOT mean the admin is gone. The old step reported success
+        // unconditionally, so a stuck admin was a silent false-success
+        // that only step 15 could catch. The ladder below (3 s,
+        // re-issue, 5 s, re-issue, 5 s = 13 s) THROWS with the waited
+        // time when the admin never clears, so the outcome dialog
+        // names the failure instead of hiding it.
         step("removeAdmin") {
             dpm.removeActiveAdmin(admin)
-            android.util.Log.i("DeviceOwnerManager", "removeActiveAdmin ok")
-            var retries = 30
-            while (retries > 0 && isAdminActive(context)) {
-                Thread.sleep(100)
-                retries--
+            var waitedMs = 0L
+            var attempts = 1
+            // Ladder: 3 s, re-issue, 5 s, re-issue, 5 s. Each re-issue
+            // is harmless if the admin already cleared.
+            val rungs = listOf(30, 50, 50)
+            for (rung in rungs) {
+                var ticks = rung
+                while (ticks > 0 && isAdminActive(context)) {
+                    Thread.sleep(100)
+                    waitedMs += 100
+                    ticks--
+                }
+                if (!isAdminActive(context)) break
+                runCatching { dpm.removeActiveAdmin(admin) }
+                attempts++
             }
             if (isAdminActive(context)) {
-                try {
-                    dpm.removeActiveAdmin(admin)
-                } catch (_: Exception) {}
-                retries = 20
-                while (retries > 0 && isAdminActive(context)) {
-                    Thread.sleep(100)
-                    retries--
-                }
+                throw PrivException.dpmFailed(
+                    "admin still active after ${waitedMs}ms " +
+                        "(removeActiveAdmin issued $attempts times)",
+                )
             }
-            "active admin removed"
+            // The exact log string "removeActiveAdmin ok" is pinned by
+            // a Batch D regression test: the device-proof step greps
+            // logcat for it. Keep it verbatim and append the waited
+            // time (deadlock re-audit fix I) after it.
+            android.util.Log.i(
+                "DeviceOwnerManager",
+                "removeActiveAdmin ok after ${waitedMs}ms",
+            )
+            "active admin removed after ${waitedMs}ms"
         }
 
         // (13) Permanent torn-down flag (Batch D root causes 2 & 4).
@@ -625,12 +775,20 @@ object DeviceOwnerManager {
         step("verify") {
             val residue = mutableListOf<String>()
             if (isDeviceOwner(context)) residue += "deviceOwner still active"
+            var adminWaitedMs = 0L
             var adminRetries = 20
             while (adminRetries > 0 && isAdminActive(context)) {
                 Thread.sleep(100)
+                adminWaitedMs += 100
                 adminRetries--
             }
             if (isAdminActive(context)) residue += "admin still active"
+            // A lockdown that was active at teardown start must be
+            // gone by now (step 1b ends it while still owner); a
+            // surviving record means the kiosk end-state is still armed.
+            if (LockdownStore.activeLockdown(context) != null) {
+                residue += "active lockdown record still present"
+            }
             // The calling user's EFFECTIVE restrictions (UserManager
             // needs no admin): none of the keys that were in force at
             // teardown start may still be true. Keys the system or
@@ -668,7 +826,7 @@ object DeviceOwnerManager {
                     "Post-removal residue: ${residue.joinToString("; ")}",
                 )
             }
-            "post-removal verification clean"
+            "post-removal verification clean (admin settled after ${adminWaitedMs}ms)"
         }
 
         // (16) Removal disarm preserved permanently (do NOT clear removalInProgress).
@@ -676,7 +834,7 @@ object DeviceOwnerManager {
             "removal disarm preserved permanently"
         }
 
-        return RemovalReport(ownerAfter, steps)
+        return RemovalReport(ownerAfter, steps, startedAsOwner)
     }
 
     // ------------------------------------------------------------ app enumeration

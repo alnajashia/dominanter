@@ -9,6 +9,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../app_controller.dart';
+import '../data/dns_protection.dart';
 import '../data/privileged_channel.dart';
 import '../domain/colour_modes.dart';
 import '../l10n/l10n.dart';
@@ -34,6 +35,11 @@ class _ConfigTabState extends State<ConfigTab> {
   bool? _isOwner;
   bool? _isAdmin;
   PrivateDnsState? _dns;
+
+  /// The persisted DNS-protection selection (moved back to Settings,
+  /// 2026-11-14): the dialog edits this; the live [_dns] above is
+  /// what the device actually enforces.
+  DnsProtection? _dnsProtection;
   Object? _error;
   Timer? _ticker;
 
@@ -96,12 +102,37 @@ class _ConfigTabState extends State<ConfigTab> {
     try {
       final owner = await _c.channel.isDeviceOwner();
       PrivateDnsState? dns;
+      DnsProtection? dnsProtection;
       var residue = const <String>[];
       if (owner.isDeviceOwner) {
         try {
           dns = await _c.channel.getPrivateDns();
         } catch (_) {
           dns = null;
+        }
+        // DNS (moved back to Settings, 2026-11-14): the persisted
+        // selection, adopting the LIVE host when the saved prefs
+        // disagree with the device — a host set from outside the
+        // app (or by the retired dialog, which never persisted).
+        // The device already enforces that host, so adopting only
+        // records the truth; it changes no enforcement.
+        try {
+          dnsProtection = await _c.config.getDnsProtection();
+        } catch (_) {
+          dnsProtection = null;
+        }
+        if (dns != null && dns.isSpecifiedHost) {
+          final live = DnsProtection.fromLiveHost(dns.hostname);
+          if (dnsProtection == null ||
+              !dnsProtection.enabled ||
+              dnsProtection.hostname != live.hostname) {
+            try {
+              await _c.config.setDnsProtection(live);
+              dnsProtection = live;
+            } catch (_) {
+              // Best-effort: the tile still shows the live host.
+            }
+          }
         }
       } else {
         // Not owner: probe for leftover restrictions from an earlier
@@ -118,6 +149,7 @@ class _ConfigTabState extends State<ConfigTab> {
           _isOwner = owner.isDeviceOwner;
           _isAdmin = owner.isAdminActive;
           _dns = dns;
+          _dnsProtection = dnsProtection;
           _residue = residue;
         });
       }
@@ -156,6 +188,148 @@ class _ConfigTabState extends State<ConfigTab> {
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
   }
 
+  /// DNS selection dialog (moved back to Settings, 2026-11-14 — the
+  /// browser-restrictions card is gone; this dialog is the ONE DNS
+  /// place). Restores the previous version's ListTile + dialog shape
+  /// with the four-provider set (CleanBrowsing, Cloudflare, AdGuard,
+  /// Custom + hostname) and the unified card's apply behaviour: the
+  /// channel call runs first and the preference is saved only after
+  /// the verified native reply; enabling is a tightening (direct) and
+  /// disabling is a loosening (recovery-gated); HOST_NOT_SERVING is
+  /// retried automatically; the real failure reason is shown inline
+  /// in the dialog with a
+  /// Retry button.
+  ///
+  /// The custom-DNS deadlock is fixed here, not papered over: the
+  /// dialog shows the hostname field as soon as Custom is picked,
+  /// and Apply is disabled until the (lowercase-normalised) hostname
+  /// is valid — the choice is never refused, so the field can never
+  /// be unreachable (item 5).
+  Future<void> _editDns() async {
+    final applied = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _DnsDialog(
+        current: _dnsProtection ?? const DnsProtection(),
+        liveHostname: _dns?.hostname,
+        onApply: _applyDns,
+      ),
+    );
+    if (applied == true && mounted) {
+      final dns = _dnsProtection;
+      showInfoSnackBar(
+        context,
+        dns != null && dns.enabled
+            ? context.l10n.dnsAppliedMsg(_dns?.hostname ?? '')
+            : context.l10n.dnsTurnedOff,
+      );
+    }
+  }
+
+  /// Applies a DNS-protection selection from the dialog: returns
+  /// (applied, error). A null error with applied == false means the
+  /// recovery gate was cancelled and the dialog simply stays open.
+  Future<({bool applied, String? error})> _applyDns(
+    DnsProtection next,
+  ) async {
+    // Captured before the awaits below (the dialog outlives them).
+    final l10n = context.l10n;
+    if (next.enabled && !next.isValid) {
+      // The dialog disables Apply while the input is invalid, so
+      // this is only a belt-and-braces path. (Only Custom can be
+      // invalid now — the fixed providers always have a hostname.)
+      return (applied: false, error: l10n.dnsInvalidHostname);
+    }
+
+    Future<({bool applied, String? error})> doApply() async {
+      try {
+        final state = await _applyDnsWithRetry(next);
+        await _c.config.setDnsProtection(next);
+        if (mounted) {
+          setState(() {
+            _dns = state;
+            _dnsProtection = next;
+          });
+        }
+        return (applied: true, error: null);
+      } on TimeoutException {
+        return (applied: false, error: l10n.dnsApplyTimeout);
+      } on PrivilegedException catch (e) {
+        return (applied: false, error: _dnsFailureMessage(e, l10n));
+      } catch (_) {
+        return (applied: false, error: l10n.dnsApplyFailed);
+      }
+    }
+
+    if (!next.enabled && (_dnsProtection?.enabled ?? false)) {
+      ({bool applied, String? error}) result = (applied: false, error: null);
+      final ok = await runLoosening(context, _c, () async {
+        result = await doApply();
+      });
+      return ok ? result : (applied: false, error: null);
+    }
+    return doApply();
+  }
+
+  /// The mapped failure message of a DNS apply (moved from the
+  /// retired browser-restrictions card, unchanged).
+  String _dnsFailureMessage(Object e, AppLocalizations l10n) {
+    if (e is TimeoutException) return l10n.dnsApplyTimeout;
+    if (e is PrivilegedException) {
+      final code = e.details['verifiedState'];
+      if (code == 2 || e.message.contains('result code 2')) {
+        return l10n.dnsNotServing;
+      }
+      if (code is num) return l10n.dnsApplyFailedCode(code.toInt());
+      return l10n.dnsApplyFailed;
+    }
+    return l10n.dnsApplyFailed;
+  }
+
+  /// True when the failure is the DPM "host not serving" result — the
+  /// retryable one (the system often reports it for a while after
+  /// provisioning, then the same host applies fine).
+  bool _isHostNotServing(Object e) {
+    if (e is PrivilegedException) {
+      return e.details['verifiedState'] == 2 ||
+          e.message.contains('result code 2');
+    }
+    return false;
+  }
+
+  /// One channel apply with automatic retry on HOST_NOT_SERVING: up to
+  /// 4 attempts (delays 2s/5s/8s, 20s timeout each) — the "fails at
+  /// first, works after a while" case from item 3. Disabling (reset
+  /// to opportunistic) never retries: it sets no host, so the code
+  /// cannot apply to it. Any other failure returns at once. Throws
+  /// the last failure.
+  Future<PrivateDnsState> _applyDnsWithRetry(DnsProtection next) async {
+    if (!next.enabled) {
+      return _c.channel
+          .resetPrivateDns()
+          .timeout(const Duration(seconds: 20));
+    }
+    const delays = [
+      Duration.zero,
+      Duration(seconds: 2),
+      Duration(seconds: 5),
+      Duration(seconds: 8),
+    ];
+    Object? lastError;
+    for (var i = 0; i < delays.length; i++) {
+      if (i > 0) await Future.delayed(delays[i]);
+      try {
+        return await _c.channel
+            .setPrivateDns(next.hostname!)
+            .timeout(const Duration(seconds: 20));
+      } catch (e) {
+        lastError = e;
+        if (!_isHostNotServing(e)) rethrow;
+      }
+    }
+    throw lastError!;
+  }
+
   /// Live subtitle for the colour-modes tile (Batch C): what is
   /// actually applied right now, or the static note while loading.
   String _colourModesSubtitle(AppLocalizations l10n) {
@@ -180,6 +354,10 @@ class _ConfigTabState extends State<ConfigTab> {
   Widget build(BuildContext context) {
     final l10n = context.l10n;
     final forced = _c.forcedRemoval;
+    // Due by EITHER leg: the accumulated ticks OR both clocks
+    // having advanced a full delay since filing (item 6 — the
+    // controller keeps this flag live at startup and on each tick).
+    final forcedDue = forced.isComplete || _c.forcedRemovalDue;
     // v1.0.5 UX (user directive): every group of controls sits in a
     // titled card, following the Status tab's grouped pattern — no
     // flat ungrouped lists. Grouping is presentation only: same
@@ -241,13 +419,11 @@ class _ConfigTabState extends State<ConfigTab> {
                     : l10n.dnsMode(_dns!.mode),
               ),
               trailing: const Icon(Icons.navigate_next_outlined),
-              // DNS batch: this tile used to open a SECOND, separate
-              // DNS dialog (presets + custom host, its own apply path
-              // that never persisted). The browser-restrictions
-              // screen's DNS card is now the ONE DNS place, so the
-              // tile navigates there instead.
+              // DNS (moved back to Settings, 2026-11-14): the tile
+              // opens the DNS dialog — the browser-restrictions
+              // screen's DNS card is gone; this is the ONE DNS place.
               onTap: _isOwner == true
-                  ? () => _push(BrowserRestrictionsScreen(controller: _c))
+                  ? _editDns
                   : () => showInfoSnackBar(context, l10n.dnsNeedsOwnerMsg),
             ),
           ],
@@ -481,13 +657,26 @@ class _ConfigTabState extends State<ConfigTab> {
                     ? _onRemoveOwnerTapped
                     : null,
               ),
+              // In-app self-uninstall (manual-uninstall wedge fix):
+              // shown only once the app is known not to be the
+              // Device Owner — the system refuses while the owner
+              // is active. The Settings uninstall wedged
+              // system_server; this route performs the in-app
+              // teardown first, which disarms the lockdown.
+              if (_isOwner == false)
+                ListTile(
+                  leading: const Icon(Icons.delete_outline_outlined),
+                  title: Text(l10n.uninstallAzm),
+                  subtitle: Text(l10n.uninstallAzmSub),
+                  onTap: _c.isRemovingDeviceOwner ? null : _onUninstallTapped,
+                ),
               ListTile(
                 leading: const Icon(Icons.hourglass_bottom_outlined),
                 title: Text(l10n.forcedRemovalTitle),
                 subtitle: Text(
                   !forced.active
                       ? l10n.forcedIdleSub
-                      : forced.isComplete
+                      : forcedDue
                       ? l10n.forcedCompleteSub
                       : l10n.forcedInProgressSub(
                           formatDuration(forced.remaining, l10n),
@@ -511,14 +700,14 @@ class _ConfigTabState extends State<ConfigTab> {
                             : _confirmStartForcedRemoval,
                         child: Text(l10n.startForcedRemoval),
                       ),
-                    if (forced.active && !forced.isComplete)
+                    if (forced.active && !forcedDue)
                       OutlinedButton(
                         onPressed: _c.isRemovingDeviceOwner
                             ? null
                             : _confirmCancelForcedRemoval,
                         child: Text(l10n.cancelForcedRemoval),
                       ),
-                    if (forced.isComplete)
+                    if (forcedDue)
                       FilledButton(
                         onPressed: _c.isRemovingDeviceOwner
                             ? null
@@ -533,6 +722,36 @@ class _ConfigTabState extends State<ConfigTab> {
         ),
       ],
     );
+  }
+
+  /// In-app self-uninstall: opens the system uninstaller for Azm
+  /// itself, after a plain confirmation card. The system always
+  /// shows its own confirmation dialog, and refuses while Device
+  /// Owner is still active — the tile is only shown when the app
+  /// is not the owner. A failed intent start (nothing could open
+  /// the uninstaller) is reported with an error card, not
+  /// swallowed; the Settings path remains as a fallback.
+  Future<void> _onUninstallTapped() async {
+    final l10n = context.l10n;
+    final proceed = await showDestructiveConfirmDialog(
+      context,
+      title: l10n.uninstallAzmConfirmTitle,
+      message: l10n.uninstallAzmConfirmBody,
+      confirmText: l10n.uninstallAzm,
+      icon: Icons.delete_outline_outlined,
+    );
+    if (!proceed || !mounted) return;
+    try {
+      final started = await _c.channel.requestSelfUninstall();
+      if (!started && mounted) {
+        await showErrorCard(
+          context,
+          PrivilegedException('UNINSTALL_NOT_STARTED', ''),
+        );
+      }
+    } catch (e) {
+      if (mounted) await showErrorCard(context, e);
+    }
   }
 
   /// High-warning centred confirmation card before immediate owner removal
@@ -784,7 +1003,17 @@ class _ConfigTabState extends State<ConfigTab> {
     if (confirmed != true) return;
     // One instant, persisted and mirrored — the previous code called
     // `forced.start()` twice and stored two different start times.
-    final started = forced.start();
+    // Item 6: stamp the elapsed-realtime clock too, so the countdown
+    // stays due-able even if the app is killed (the 30 s tick stalls
+    // with the process; the clocks do not). A missing channel method
+    // leaves the elapsed stamp null — accumulation-only, as before.
+    Duration? elapsed;
+    try {
+      elapsed = await _c.channel.getElapsedRealtimeMs();
+    } catch (_) {
+      elapsed = null;
+    }
+    final started = forced.start(atElapsed: elapsed);
     try {
       await _c.config.setForcedRemoval(started);
     } catch (e) {
@@ -948,7 +1177,11 @@ Future<void> executeDeviceOwnerRemovalFlow({
   required AppController controller,
   bool isForcedRemoval = false,
   Duration minDisplayDuration = const Duration(seconds: 10),
-  Duration maxDisplayDuration = const Duration(seconds: 20),
+  // 45 s (was 20 s): the native teardown is bounded by construction
+  // at ~25–30 s on a several-hundred-app device (deadlock re-audit
+  // fix E), so the display cap must not stop polling while a
+  // legitimate teardown is still running.
+  Duration maxDisplayDuration = const Duration(seconds: 45),
   Duration pollInterval = const Duration(seconds: 1),
   VoidCallback? onRemovalSuccess,
 }) async {
@@ -956,6 +1189,45 @@ Future<void> executeDeviceOwnerRemovalFlow({
   controller.isRemovingDeviceOwner = true;
 
   final l10n = context.l10n;
+
+  // Pre-flight (deadlock re-audit fix D): if colour modes are currently
+  // enforced but the WRITE_SECURE_SETTINGS grant is gone (Shizuku
+  // stopped), the colour step could not restore the device keys — and
+  // the user would discover that only after the owner is already gone.
+  // Warn first; continuing anyway is the user's explicit choice.
+  // Both probes fail open (a probe error never blocks the removal).
+  final colourEnforced = await controller.channel
+      .hasEnforcedColourModes()
+      .catchError((_) => false);
+  final secureSettingsGranted = await controller.channel
+      .isWriteSecureSettingsGranted()
+      .catchError((_) => true);
+  if (colourEnforced && !secureSettingsGranted) {
+    if (!context.mounted) {
+      controller.isRemovingDeviceOwner = false;
+      return;
+    }
+    final proceed = await showDestructiveConfirmDialog(
+      context,
+      title: l10n.removalColourPreflightTitle,
+      message: l10n.removalColourPreflightBody,
+      confirmText: l10n.removalColourPreflightContinue,
+      icon: Icons.palette_outlined,
+    );
+    if (!context.mounted) {
+      controller.isRemovingDeviceOwner = false;
+      return;
+    }
+    if (!proceed) {
+      controller.isRemovingDeviceOwner = false;
+      return;
+    }
+  }
+  if (!context.mounted) {
+    controller.isRemovingDeviceOwner = false;
+    return;
+  }
+
   BuildContext? dialogCtx;
 
   showDialog<void>(
@@ -1050,8 +1322,17 @@ Future<void> executeDeviceOwnerRemovalFlow({
     await removalFuture;
   } catch (_) {}
 
+  // Dismiss the loading dialog. Prefer the builder-assigned context;
+  // fall back to the root navigator when the builder has not run yet
+  // (the teardown can finish before the next frame builds the dialog
+  // — e.g. in tests — and the dialog would otherwise stay up forever
+  // with its spinner spinning). The loading dialog is the top route
+  // of the root navigator here: nothing else is pushed between
+  // showDialog above and this pop.
   if (dialogCtx != null && dialogCtx!.mounted) {
     Navigator.of(dialogCtx!).pop();
+  } else if (context.mounted) {
+    Navigator.of(context, rootNavigator: true).pop();
   }
 
   controller.isRemovingDeviceOwner = false;
@@ -1078,6 +1359,7 @@ Future<void> executeDeviceOwnerRemovalFlow({
       result: removalResult,
       verification: lastVerification,
       isTimeout: false,
+      onUninstall: () => controller.channel.requestSelfUninstall(),
     );
   } else {
     showRemovalOutcomeDialog(
@@ -1085,6 +1367,7 @@ Future<void> executeDeviceOwnerRemovalFlow({
       result: removalResult,
       verification: lastVerification,
       isTimeout: true,
+      onUninstall: () => controller.channel.requestSelfUninstall(),
       onRecheck: () => runRemovalRecheckFlow(
         context: context,
         controller: controller,
@@ -1102,7 +1385,7 @@ Future<void> runRemovalRecheckFlow({
   required BuildContext context,
   required AppController controller,
   DeviceOwnerRemovalResult? priorResult,
-  Duration maxDisplayDuration = const Duration(seconds: 20),
+  Duration maxDisplayDuration = const Duration(seconds: 45),
   Duration pollInterval = const Duration(seconds: 1),
   VoidCallback? onRemovalSuccess,
 }) async {
@@ -1186,8 +1469,14 @@ Future<void> runRemovalRecheckFlow({
     timer?.cancel();
   }
 
+  // Dismiss the loading dialog (same race note as the main flow:
+  // the builder may not have run yet when the re-check finishes fast,
+  // so fall back to the root navigator when the builder context is
+  // not available).
   if (dialogCtx != null && dialogCtx!.mounted) {
     Navigator.of(dialogCtx!).pop();
+  } else if (context.mounted) {
+    Navigator.of(context, rootNavigator: true).pop();
   }
 
   controller.isRemovingDeviceOwner = false;
@@ -1208,6 +1497,7 @@ Future<void> runRemovalRecheckFlow({
       result: priorResult,
       verification: lastVerification,
       isTimeout: false,
+      onUninstall: () => controller.channel.requestSelfUninstall(),
     );
   } else {
     showRemovalOutcomeDialog(
@@ -1215,6 +1505,7 @@ Future<void> runRemovalRecheckFlow({
       result: priorResult,
       verification: lastVerification,
       isTimeout: true,
+      onUninstall: () => controller.channel.requestSelfUninstall(),
       onRecheck: () => runRemovalRecheckFlow(
         context: context,
         controller: controller,
@@ -1237,11 +1528,26 @@ Future<void> showRemovalOutcomeDialog(
   RemovalVerificationResult? verification,
   bool isTimeout = false,
   VoidCallback? onRecheck,
+  // In-app self-uninstall: the caller passes the channel call; the
+  // dialog shows the button only on a clean removal (verified, no
+  // failed steps) — the system refuses while Device Owner is
+  // still active.
+  Future<void> Function()? onUninstall,
 }) async {
   final l10n = context.l10n;
   final failed = result?.failedSteps ?? const [];
-  final isClean = (verification?.verified == true) &&
-      (failed.isEmpty || (failed.length == 1 && failed.first.id == 'verify'));
+  final skipped = result?.skippedSteps ?? const [];
+  // A verify-only failure is NOT clean: the native report disagreed
+  // with the Dart probe, and hiding it showed a clean success while
+  // the native step said otherwise (deadlock re-audit F9 / fix F).
+  final isClean = (verification?.verified == true) && failed.isEmpty;
+
+  // A re-run in the half-torn-down state started without owner power:
+  // owner-only residue can only be cleared by re-provisioning as
+  // Device Owner first (deadlock re-audit F3 / fix C).
+  final showReprovisionGuidance =
+      (result?.startedAsOwner == false) &&
+      (failed.isNotEmpty || skipped.isNotEmpty);
 
   final unverifiedItems = <String>[];
   if (isTimeout && verification != null) {
@@ -1303,6 +1609,21 @@ Future<void> showRemovalOutcomeDialog(
                   ),
                 ),
             ],
+            if (skipped.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              for (final s in skipped)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    '• ${removalStepLabel(l10n, s.id)} '
+                    '(${l10n.removalStepSkipped}) — ${s.detail}',
+                  ),
+                ),
+            ],
+            if (showReprovisionGuidance) ...[
+              const SizedBox(height: 12),
+              Text(l10n.removalReprovisionGuidance),
+            ],
           ],
         ),
       ),
@@ -1319,15 +1640,255 @@ Future<void> showRemovalOutcomeDialog(
             },
             child: Text(l10n.removalRecheckAction),
           ),
+        // In-app self-uninstall, only on a clean removal. Popping
+        // first keeps this dialog out of the way of the system
+        // uninstaller that opens on top of it.
+        if (isClean && onUninstall != null)
+          FilledButton(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await onUninstall();
+            },
+            child: Text(l10n.uninstallAzm),
+          ),
       ],
     ),
   );
 }
 
+/// DNS selection dialog, mirroring the previous version's `_DnsDialog`
+/// shape with the unified card's provider set: an Off choice
+/// plus exactly one of CleanBrowsing / Cloudflare / AdGuard /
+/// Custom. The custom hostname field is shown as soon as its radio
+/// is picked, and Apply stays disabled until the input is valid —
+/// the choice is never refused, so the field can never be
+/// unreachable (item 5: the custom-DNS deadlock).
+///
+/// The custom hostname is lowercase-normalised on apply (the model
+/// only accepts lowercase), so typing uppercase is valid input, not
+/// an error. [onApply] performs the gated native call and reports
+/// (applied, error): a null error with applied == false means the
+/// recovery gate was cancelled and the dialog simply stays open.
+class _DnsDialog extends StatefulWidget {
+  const _DnsDialog({
+    required this.current,
+    required this.liveHostname,
+    required this.onApply,
+  });
+
+  final DnsProtection current;
+  final String? liveHostname;
+  final Future<({bool applied, String? error})> Function(DnsProtection)
+  onApply;
+
+  @override
+  State<_DnsDialog> createState() => _DnsDialogState();
+}
+
+class _DnsDialogState extends State<_DnsDialog> {
+  /// The selected provider, or null for Off.
+  DnsProvider? _selected;
+  final _customController = TextEditingController();
+  bool _loading = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final current = widget.current;
+    _selected = current.enabled ? current.provider : null;
+    _customController.text = current.customHostname;
+  }
+
+  @override
+  void dispose() {
+    _customController.dispose();
+    super.dispose();
+  }
+
+  /// The custom hostname as it will be applied: trimmed and
+  /// lowercase-normalised (the model only accepts lowercase).
+  String get _customHost => _customController.text.trim().toLowerCase();
+
+  bool get _customValid =>
+      DnsProtection.isValidCustomHostname(_customHost);
+
+  bool get _canApply {
+    if (_loading) return false;
+    if (_selected == null) return true;
+    if (_selected == DnsProvider.custom) return _customValid;
+    return true;
+  }
+
+  Future<void> _apply() async {
+    final next = _selected == null
+        ? widget.current.copyWith(enabled: false)
+        : DnsProtection(
+            enabled: true,
+            provider: _selected!,
+            customHostname: _customHost,
+          );
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final result = await widget.onApply(next);
+    if (!mounted) return;
+    if (result.applied) {
+      Navigator.pop(context, true);
+    } else {
+      setState(() {
+        _loading = false;
+        _error = result.error;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return PopScope(
+      canPop: !_loading,
+      child: AlertDialog(
+        title: Text(l10n.privateDns),
+        content: SizedBox(
+          width: 360,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.liveHostname != null
+                      ? l10n.dnsCurrentHost(widget.liveHostname!)
+                      : l10n.dnsNotSet,
+                ),
+                const SizedBox(height: 8),
+                RadioGroup<DnsProvider?>(
+                  groupValue: _selected,
+                  onChanged: _loading
+                      ? (_) {}
+                      : (v) => setState(() => _selected = v),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      RadioListTile<DnsProvider?>(
+                        value: null,
+                        title: Text(l10n.dnsOff),
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                      RadioListTile<DnsProvider?>(
+                        title: Text(l10n.dnsProviderCleanbrowsing),
+                        subtitle: Text(l10n.dnsProviderCleanbrowsingNote),
+                        value: DnsProvider.cleanBrowsing,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                      RadioListTile<DnsProvider?>(
+                        title: Text(l10n.dnsProviderCloudflare),
+                        subtitle: Text(l10n.dnsProviderCloudflareNote),
+                        value: DnsProvider.cloudflare,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                      RadioListTile<DnsProvider?>(
+                        title: Text(l10n.dnsProviderAdguard),
+                        subtitle: Text(l10n.dnsProviderAdguardNote),
+                        value: DnsProvider.adguard,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                      RadioListTile<DnsProvider?>(
+                        title: Text(l10n.dnsCustom),
+                        subtitle: Text(l10n.dnsProviderCustomNote),
+                        value: DnsProvider.custom,
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                      if (_selected == DnsProvider.custom)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                          child: TextField(
+                            controller: _customController,
+                            decoration: InputDecoration(
+                              labelText: l10n.dnsHostnameLabel,
+                              hintText: l10n.dnsHostnameHint,
+                              helperText: _customHost.isEmpty
+                                  ? null
+                                  : _customHost,
+                              errorText:
+                                  _customController.text.isNotEmpty &&
+                                      !_customValid
+                                  ? l10n.dnsInvalidHostname
+                                  : null,
+                            ),
+                            enabled: !_loading,
+                            onChanged: (_) => setState(() {}),
+                            onSubmitted: (_) => _apply(),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(l10n.dnsProtectionNote),
+                ),
+                // The last apply's real failure reason, with a
+                // Retry button (the one-shot error dialog's generic
+                // message is what hid the cause in item 3).
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _error!,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: _loading ? null : _apply,
+                          child: Text(l10n.dnsRetryApply),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _loading ? null : () => Navigator.pop(context, false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: _canApply ? _apply : null,
+            child: _loading
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Text(l10n.apply),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Localized names for native teardown step ids.
 String removalStepLabel(AppLocalizations l10n, String id) => switch (id) {
-  'flag' || 'flagClear' => l10n.removalStepDisarm,
+  'flag' || 'flagClear' || 'tornDown' => l10n.removalStepDisarm,
   'focus' => l10n.removalStepFocus,
+  'lockdown' => l10n.removalStepLockdown,
   'policies' => l10n.removalStepPolicies,
   'privateDns' => l10n.removalStepPrivateDns,
   'unsuspend' => l10n.removalStepUnsuspend,
@@ -1337,6 +1898,8 @@ String removalStepLabel(AppLocalizations l10n, String id) => switch (id) {
   'appRestrictions' => l10n.removalStepAppRestrictions,
   'notifications' => l10n.removalStepNotifications,
   'clearOwner' => l10n.removalStepClearOwner,
+  'removeAdmin' => l10n.removalStepRemoveAdmin,
+  'stopAccessibility' => l10n.removalStepStopAccessibility,
   'colourModes' => l10n.removalStepColourModes,
   'verify' => l10n.removalStepVerify,
   _ => id,

@@ -70,10 +70,9 @@ object LockdownStore {
     private const val KEY_ACTIVE_END_WALL = "active_end_wall"
     private const val KEY_ACTIVE_BOOT_COUNT = "active_boot_count"
 
-    /** One-shot durations the UI offers (minutes). */
-    val ONE_SHOT_MINUTES = listOf(15, 30, 60, 180)
-    const val ONE_SHOT_MIN_MINUTES = 5
-    const val ONE_SHOT_MAX_MINUTES = 12 * 60
+    /** One-shot duration range in seconds: 1 minute .. 24 hours. */
+    const val ONE_SHOT_MIN_SECONDS = 60
+    const val ONE_SHOT_MAX_SECONDS = 24 * 60 * 60
 
     /** The lockdown's own restrictions, on top of the suspension. */
     private val LOCKDOWN_RESTRICTIONS = setOf(
@@ -87,7 +86,7 @@ object LockdownStore {
     data class Lockdown(
         val id: String = UUID.randomUUID().toString(),
         val kind: LockdownKind = LockdownKind.ONE_SHOT,
-        val durationMinutes: Int = 180,
+        val durationSeconds: Int = 180 * 60,
         val startHour: Int = 6,
         val startMinute: Int = 0,
         val endHour: Int = 10,
@@ -100,9 +99,17 @@ object LockdownStore {
         val enabled: Boolean = true,
         val label: String = "",
     ) {
+        /** Whole minutes, derived — the slider and stored JSONs speak
+         * minutes; the model itself is seconds. */
+        val durationMinutes: Int
+            get() = durationSeconds / 60
+
         fun toMap(): Map<String, Any?> = mapOf(
             "id" to id,
             "kind" to kind.name,
+            // Both keys: old stored JSONs read minutes, the model
+            // reads seconds first.
+            "durationSeconds" to durationSeconds,
             "durationMinutes" to durationMinutes,
             "startHour" to startHour,
             "startMinute" to startMinute,
@@ -120,6 +127,7 @@ object LockdownStore {
         fun toJson(): JSONObject = JSONObject()
             .put("id", id)
             .put("kind", kind.name)
+            .put("durationSeconds", durationSeconds)
             .put("durationMinutes", durationMinutes)
             .put("startHour", startHour)
             .put("startMinute", startMinute)
@@ -174,6 +182,23 @@ object LockdownStore {
         }
 
         companion object {
+            /** One-shot duration in seconds (60..86400). Prefers the
+             * seconds value; a stored record from before the seconds
+             * model (minutes only, -1 = absent) falls back to minutes
+             * clamped to 1..1440; absent both, the 3-hour default. */
+            fun durationSecondsFrom(seconds: Int, minutes: Int): Int {
+                if (seconds > 0) {
+                    return seconds.coerceIn(
+                        ONE_SHOT_MIN_SECONDS,
+                        ONE_SHOT_MAX_SECONDS,
+                    )
+                }
+                if (minutes > 0) {
+                    return minutes.coerceIn(1, 1440) * 60
+                }
+                return 180 * 60
+            }
+
             // Block body, not `= try { ... }`: the `return null`
             // below is prohibited in an expression-bodied function
             // (same lesson as FocusSchedule.fromJson in Batch I-A).
@@ -197,7 +222,10 @@ object LockdownStore {
                     Lockdown(
                         id = id,
                         kind = runCatching { LockdownKind.valueOf(json.optString("kind", "ONE_SHOT")) }.getOrDefault(LockdownKind.ONE_SHOT),
-                        durationMinutes = json.optInt("durationMinutes", 180).coerceIn(ONE_SHOT_MIN_MINUTES, ONE_SHOT_MAX_MINUTES),
+                        durationSeconds = durationSecondsFrom(
+                            json.optInt("durationSeconds", -1),
+                            json.optInt("durationMinutes", -1),
+                        ),
                         startHour = json.optInt("startHour", 6).coerceIn(0, 23),
                         startMinute = json.optInt("startMinute", 0).coerceIn(0, 59),
                         endHour = json.optInt("endHour", 10).coerceIn(0, 23),
@@ -227,7 +255,10 @@ object LockdownStore {
                 return Lockdown(
                     id = id,
                     kind = runCatching { LockdownKind.valueOf(m["kind"] as? String ?: "ONE_SHOT") }.getOrDefault(LockdownKind.ONE_SHOT),
-                    durationMinutes = ((m["durationMinutes"] as? Number)?.toInt() ?: 180).coerceIn(ONE_SHOT_MIN_MINUTES, ONE_SHOT_MAX_MINUTES),
+                    durationSeconds = durationSecondsFrom(
+                        (m["durationSeconds"] as? Number)?.toInt() ?: -1,
+                        (m["durationMinutes"] as? Number)?.toInt() ?: -1,
+                    ),
                     startHour = ((m["startHour"] as? Number)?.toInt() ?: 6).coerceIn(0, 23),
                     startMinute = ((m["startMinute"] as? Number)?.toInt() ?: 0).coerceIn(0, 59),
                     endHour = ((m["endHour"] as? Number)?.toInt() ?: 10).coerceIn(0, 23),
@@ -368,7 +399,7 @@ object LockdownStore {
         val now = System.currentTimeMillis()
         val (endElapsed, endWall) = when (lockdown.kind) {
             LockdownKind.ONE_SHOT -> {
-                val durMs = lockdown.durationMinutes * 60_000L
+                val durMs = lockdown.durationSeconds * 1000L
                 SystemClock.elapsedRealtime() + durMs to now + durMs
             }
             LockdownKind.RECURRING -> {

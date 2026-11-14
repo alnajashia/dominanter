@@ -11,6 +11,9 @@
 /// Ending one early is a loosening action and goes through the
 /// recovery gate — in Tier 1 here, in Tier 2 in the kiosk activity
 /// itself (the Flutter UI is unreachable while the kiosk runs).
+/// Tier 1 demands FRESH code entry even when a recovery session is
+/// already active (user request 2026-11-14), exactly like the Tier 2
+/// kiosk activity's native check, which knows no session.
 ///
 /// Recurring windows always enforce when they fire, so adding,
 /// deleting, enabling or disabling one needs the code; editing a
@@ -20,6 +23,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_controller.dart';
 import '../data/privileged_channel.dart';
@@ -45,13 +49,20 @@ class _LockdownScreenState extends State<LockdownScreen>
   Timer? _timer;
   int? _remainingMs;
 
-  // One-shot start form.
-  int _durationMinutes = 180;
+  // One-shot start form. The duration is kept in SECONDS (60..86400
+  // = 1 minute..24 hours, user request 2026-11-14); every entry
+  // point below — slider, typed minutes, H/M/S fields — writes this
+  // one value, and the fields are refreshed from it.
+  int _durationSeconds = 180 * 60;
   LockdownScope _scope = LockdownScope.allApps;
   Set<String> _targetApps = {};
   Set<String> _targetGroups = {};
   bool _strict = false;
   final _labelController = TextEditingController();
+  final _minutesController = TextEditingController(text: '180');
+  final _hoursController = TextEditingController(text: '3');
+  final _minsController = TextEditingController(text: '0');
+  final _secsController = TextEditingController(text: '0');
 
   @override
   void initState() {
@@ -79,6 +90,10 @@ class _LockdownScreenState extends State<LockdownScreen>
   void dispose() {
     _timer?.cancel();
     _labelController.dispose();
+    _minutesController.dispose();
+    _hoursController.dispose();
+    _minsController.dispose();
+    _secsController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -223,6 +238,8 @@ class _LockdownScreenState extends State<LockdownScreen>
   }
 
   Future<void> _endEarly() async {
+    // Fresh code entry every time, even inside an active recovery
+    // session — Tier 1 matches Tier 2's native check here.
     await runLoosening(context, widget.controller, () async {
       try {
         final state = await widget.controller.channel.endLockdown();
@@ -235,6 +252,70 @@ class _LockdownScreenState extends State<LockdownScreen>
       } catch (e) {
         if (mounted) await showErrorCard(context, e);
       }
+    }, forceFreshCode: true);
+  }
+
+  /// The duration fields show the current [_durationSeconds];
+  /// refresh every field except [skip] (the one the user is typing
+  /// in — its controller keeps the in-progress text and the cursor).
+  void _syncDurationFields({TextEditingController? skip}) {
+    final total = _durationSeconds;
+    void set(TextEditingController c, String v) {
+      if (c != skip && c.text != v) c.text = v;
+    }
+
+    set(_minutesController, '${total ~/ 60}');
+    set(_hoursController, '${total ~/ 3600}');
+    set(_minsController, '${(total % 3600) ~/ 60}');
+    set(_secsController, '${total % 60}');
+  }
+
+  /// A typed total-minutes value applies at once while it is in
+  /// range; an out-of-range value waits for submit, so typing 1440
+  /// digit by digit never snaps back mid-way.
+  void _applyTypedMinutes(String text) {
+    final m = int.tryParse(text);
+    if (m == null || m < 1 || m > 1440) return;
+    setState(() {
+      _durationSeconds = m * 60;
+      _syncDurationFields(skip: _minutesController);
+    });
+  }
+
+  /// Submit clamps the typed minutes to 1..1440 and rewrites every
+  /// field from the clamped total.
+  void _commitTypedMinutes() {
+    final m = (int.tryParse(_minutesController.text) ?? 0).clamp(1, 1440);
+    setState(() {
+      _durationSeconds = m * 60;
+      _syncDurationFields();
+    });
+  }
+
+  /// The H/M/S fields: the total applies at once while it is in
+  /// range; an out-of-range total waits for submit.
+  void _applyHMS(TextEditingController edited) {
+    final h = int.tryParse(_hoursController.text) ?? 0;
+    final m = int.tryParse(_minsController.text) ?? 0;
+    final s = int.tryParse(_secsController.text) ?? 0;
+    final total = h * 3600 + m * 60 + s;
+    if (total < 60 || total > 86400) return;
+    setState(() {
+      _durationSeconds = total;
+      _syncDurationFields(skip: edited);
+    });
+  }
+
+  /// Submit clamps the H/M/S total to 1 minute..24 hours and rewrites
+  /// every field from the clamped total.
+  void _commitHMS() {
+    final h = int.tryParse(_hoursController.text) ?? 0;
+    final m = int.tryParse(_minsController.text) ?? 0;
+    final s = int.tryParse(_secsController.text) ?? 0;
+    final total = (h * 3600 + m * 60 + s).clamp(60, 86400);
+    setState(() {
+      _durationSeconds = total;
+      _syncDurationFields();
     });
   }
 
@@ -244,16 +325,100 @@ class _LockdownScreenState extends State<LockdownScreen>
       children: [
         ListTile(
           title: Text(l10n.lockdownDuration),
-          subtitle: SegmentedButton<int>(
-            segments: const [
-              ButtonSegment(value: 15, label: Text('15')),
-              ButtonSegment(value: 30, label: Text('30')),
-              ButtonSegment(value: 60, label: Text('60')),
-              ButtonSegment(value: 180, label: Text('180')),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    formatClock(Duration(seconds: _durationSeconds)),
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  Expanded(
+                    child: Slider(
+                      min: 1,
+                      max: 1440,
+                      divisions: 1439,
+                      value: (_durationSeconds ~/ 60).toDouble(),
+                      label: formatClock(
+                        Duration(seconds: _durationSeconds),
+                      ),
+                      onChanged: (v) {
+                        setState(() {
+                          _durationSeconds =
+                              (v.round() * 60).clamp(60, 86400);
+                          _syncDurationFields();
+                        });
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _minutesController,
+                      decoration: InputDecoration(
+                        labelText: l10n.lockdownDurationTotalMinutes,
+                        hintText: '1–1440',
+                      ),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
+                      onChanged: _applyTypedMinutes,
+                      onSubmitted: (_) => _commitTypedMinutes(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _hoursController,
+                      decoration: InputDecoration(
+                        labelText: l10n.lockdownDurationHours,
+                      ),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
+                      onChanged: (_) => _applyHMS(_hoursController),
+                      onSubmitted: (_) => _commitHMS(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _minsController,
+                      decoration: InputDecoration(
+                        labelText: l10n.lockdownDurationMinutes,
+                      ),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
+                      onChanged: (_) => _applyHMS(_minsController),
+                      onSubmitted: (_) => _commitHMS(),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _secsController,
+                      decoration: InputDecoration(
+                        labelText: l10n.lockdownDurationSeconds,
+                      ),
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                      ],
+                      onChanged: (_) => _applyHMS(_secsController),
+                      onSubmitted: (_) => _commitHMS(),
+                    ),
+                  ),
+                ],
+              ),
             ],
-            selected: {_durationMinutes},
-            onSelectionChanged: (s) =>
-                setState(() => _durationMinutes = s.first),
           ),
         ),
         ListTile(
@@ -350,7 +515,7 @@ class _LockdownScreenState extends State<LockdownScreen>
     final lockdown = Lockdown(
       id: 'lockdown-${DateTime.now().microsecondsSinceEpoch}',
       kind: LockdownKind.oneShot,
-      durationMinutes: _durationMinutes,
+      durationSeconds: _durationSeconds,
       scope: _scope,
       targetApps: _scope == LockdownScope.apps ? _targetApps : const {},
       targetGroups:

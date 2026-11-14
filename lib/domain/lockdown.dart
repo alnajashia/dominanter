@@ -34,7 +34,7 @@ class Lockdown {
   const Lockdown({
     required this.id,
     this.kind = LockdownKind.oneShot,
-    this.durationMinutes = 180,
+    this.durationSeconds = 180 * 60,
     this.startHour = 6,
     this.startMinute = 0,
     this.endHour = 10,
@@ -50,7 +50,11 @@ class Lockdown {
 
   final String id;
   final LockdownKind kind;
-  final int durationMinutes; // one-shot only, 5..720
+  final int durationSeconds; // one-shot only, 60..86400 (1 min..24 h)
+
+  /// Whole minutes, derived — the slider and the legacy wire field
+  /// speak minutes; the model itself is seconds.
+  int get durationMinutes => durationSeconds ~/ 60;
   final int startHour; // recurring only, 0..23
   final int startMinute; // recurring only, 0..59
   final int endHour; // recurring only, 0..23
@@ -95,6 +99,9 @@ class Lockdown {
   Map<String, dynamic> toMap() => {
         'id': id,
         'kind': kind == LockdownKind.oneShot ? 'ONE_SHOT' : 'RECURRING',
+        // Both keys: the native side and old stored JSONs read minutes,
+        // the model reads seconds first.
+        'durationSeconds': durationSeconds,
         'durationMinutes': durationMinutes,
         'startHour': startHour,
         'startMinute': startMinute,
@@ -112,6 +119,27 @@ class Lockdown {
         'enabled': enabled,
         'label': label,
       };
+
+  /// One-shot duration in seconds (60..86400). Prefers the seconds
+  /// key; a stored JSON from before the seconds model (minutes only)
+  /// falls back to minutes clamped to 1..1440; absent both, the
+  /// 3-hour default.
+  static int _secondsFromMap(Map<String, dynamic> m) {
+    final seconds = (m['durationSeconds'] as num?)?.toInt();
+    if (seconds != null) {
+      if (seconds < 60) return 60;
+      if (seconds > 86400) return 86400;
+      return seconds;
+    }
+    final minutes = (m['durationMinutes'] as num?)?.toInt();
+    if (minutes != null) {
+      final m2 = minutes < 1
+          ? 1
+          : (minutes > 1440 ? 1440 : minutes);
+      return m2 * 60;
+    }
+    return 180 * 60;
+  }
 
   static Lockdown? fromMap(Map<String, dynamic> m) {
     final id = m['id'] as String?;
@@ -132,8 +160,7 @@ class Lockdown {
       kind: m['kind'] == 'RECURRING'
           ? LockdownKind.recurring
           : LockdownKind.oneShot,
-      durationMinutes:
-          (m['durationMinutes'] as num?)?.toInt().clamp(5, 720) ?? 180,
+      durationSeconds: _secondsFromMap(m),
       startHour: (m['startHour'] as num?)?.toInt().clamp(0, 23) ?? 6,
       startMinute: (m['startMinute'] as num?)?.toInt().clamp(0, 59) ?? 0,
       endHour: (m['endHour'] as num?)?.toInt().clamp(0, 23) ?? 10,
@@ -154,7 +181,7 @@ class Lockdown {
 
   Lockdown copyWith({
     LockdownKind? kind,
-    int? durationMinutes,
+    int? durationSeconds,
     int? startHour,
     int? startMinute,
     int? endHour,
@@ -170,7 +197,7 @@ class Lockdown {
       Lockdown(
         id: id,
         kind: kind ?? this.kind,
-        durationMinutes: durationMinutes ?? this.durationMinutes,
+        durationSeconds: durationSeconds ?? this.durationSeconds,
         startHour: startHour ?? this.startHour,
         startMinute: startMinute ?? this.startMinute,
         endHour: endHour ?? this.endHour,
@@ -191,7 +218,7 @@ class Lockdown {
           runtimeType == other.runtimeType &&
           id == other.id &&
           kind == other.kind &&
-          durationMinutes == other.durationMinutes &&
+          durationSeconds == other.durationSeconds &&
           startHour == other.startHour &&
           startMinute == other.startMinute &&
           endHour == other.endHour &&
@@ -211,7 +238,7 @@ class Lockdown {
   int get hashCode => Object.hash(
         id,
         kind,
-        durationMinutes,
+        durationSeconds,
         startHour,
         startMinute,
         endHour,

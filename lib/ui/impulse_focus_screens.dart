@@ -24,6 +24,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_controller.dart';
 import '../data/config_store.dart';
@@ -1567,6 +1568,11 @@ class _FocusModeScreenState extends State<FocusModeScreen>
     );
   }
 
+  /// A duration row: steppers plus a tappable number. Tapping the
+  /// number opens a type-in dialog (user request 2026-11-14): stepping
+  /// by 1 is impractical for large values. The typed value is clamped
+  /// to the row's min/max and flows through the same onChanged (and
+  /// its loosening gate) as the steppers.
   Widget _durationRow(
     String label,
     int value, {
@@ -1584,7 +1590,25 @@ class _FocusModeScreenState extends State<FocusModeScreen>
               icon: const Icon(Icons.remove_circle_outline),
               onPressed: value > min ? () => onChanged(value - 1) : null,
             ),
-            Expanded(child: Text('$value', textAlign: TextAlign.center)),
+            Expanded(
+              child: InkWell(
+                onTap: () => _typeDuration(
+                  label,
+                  value,
+                  min: min,
+                  max: max,
+                  onChanged: onChanged,
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text('$value', textAlign: TextAlign.center),
+                    const SizedBox(width: 4),
+                    const Icon(Icons.edit_outlined, size: 14),
+                  ],
+                ),
+              ),
+            ),
             IconButton(
               icon: const Icon(Icons.add_circle_outline),
               onPressed: value < max ? () => onChanged(value + 1) : null,
@@ -1593,6 +1617,47 @@ class _FocusModeScreenState extends State<FocusModeScreen>
         ),
       ),
     );
+  }
+
+  Future<void> _typeDuration(
+    String label,
+    int value, {
+    required int min,
+    required int max,
+    required ValueChanged<int> onChanged,
+  }) async {
+    // Per-dialog controllers are never disposed in this codebase
+    // (disposing right after showDialog returns crashes).
+    final controller = TextEditingController(text: '$value');
+    final result = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(label),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          autofocus: true,
+          decoration: InputDecoration(hintText: '$min–$max'),
+          onSubmitted: (v) =>
+              Navigator.of(dialogContext).pop(int.tryParse(v)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(context.l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(
+              dialogContext,
+            ).pop(int.tryParse(controller.text)),
+            child: Text(context.l10n.save),
+          ),
+        ],
+      ),
+    );
+    if (result == null) return;
+    onChanged(result.clamp(min, max));
   }
 
   Future<List<String>?> _pickApps(List<String> current) async {

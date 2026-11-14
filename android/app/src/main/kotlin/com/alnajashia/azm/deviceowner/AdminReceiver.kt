@@ -24,8 +24,14 @@ class AzmDeviceAdminReceiver : DeviceAdminReceiver() {
 
     override fun onEnabled(context: Context, intent: Intent) {
         super.onEnabled(context, intent)
-        SettingsStore.setProtectionTornDown(false)
-        SettingsStore.setRemovalInProgress(false)
+        // Do NOT clear the disarm while a removal is in progress: a
+        // re-enabled admin mid-teardown would otherwise silently re-arm
+        // every enforcement path. The flags are reset only by a fresh
+        // provisioning (a new onEnabled after the removal window lapses).
+        if (!SettingsStore.isRemovalInProgress()) {
+            SettingsStore.setProtectionTornDown(false)
+            SettingsStore.setRemovalInProgress(false)
+        }
     }
 
     override fun onDisabled(context: Context, intent: Intent) {

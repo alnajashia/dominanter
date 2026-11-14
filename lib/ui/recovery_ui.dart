@@ -732,11 +732,16 @@ class SetupRecoveryScreen extends StatelessWidget {
 /// Pass-throughs, mirroring `RecoveryGate.run()`: an already-active
 /// session skips the gate, and so does the state where no recovery code
 /// has been set yet (first run, before the setup wizard has run).
+/// [forceFreshCode] skips the active-session pass-through and always
+/// shows the code dialog — for actions that must demand fresh code
+/// entry even inside a session (Tier 1 lockdown end-early, matching
+/// the Tier 2 kiosk activity's native code check).
 Future<bool> ensureRecoverySession(
   BuildContext context,
-  AppController controller,
-) async {
-  if (controller.session.isActive) return true;
+  AppController controller, {
+  bool forceFreshCode = false,
+}) async {
+  if (!forceFreshCode && controller.session.isActive) return true;
   try {
     if (!await controller.channel.isRecoveryCodeSet()) return true;
   } catch (_) {
@@ -914,12 +919,21 @@ class _RecoveryGateDialogState extends State<_RecoveryGateDialog> {
 }
 
 /// Guards a loosening action (F23): runs it only with an active session.
+/// [forceFreshCode] forwards to [ensureRecoverySession]: the action
+/// demands fresh code entry even when a session is already active.
 Future<bool> runLoosening(
   BuildContext context,
   AppController controller,
-  Future<void> Function() action,
-) async {
-  if (!await ensureRecoverySession(context, controller)) return false;
+  Future<void> Function() action, {
+  bool forceFreshCode = false,
+}) async {
+  if (!await ensureRecoverySession(
+    context,
+    controller,
+    forceFreshCode: forceFreshCode,
+  )) {
+    return false;
+  }
   try {
     await action();
     return true;

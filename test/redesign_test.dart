@@ -346,4 +346,85 @@ void main() {
         .toList();
     expect(barColors, contains(AzmColors.blackBar));
   });
+
+  // Tap-to-type durations (user request 2026-11-14): tapping a
+  // duration's number opens a dialog to type it — stepping by 1 is
+  // impractical for large values. Lengthening is a tightening, so no
+  // recovery gate is involved.
+  testWidgets('Focus duration: tapping the number types a new value', (
+    tester,
+  ) async {
+    messenger.setMockMethodCallHandler(methodChannel, (call) async {
+      switch (call.method) {
+        case 'getSetting':
+          return {'value': null}; // defaults: 25 min focus / 5 min break
+        case 'listInstalledApps':
+          return <Object?>[];
+        case 'getGroups':
+          return {'groups': <Object?>[]};
+        case 'getFocusSession':
+          return null;
+        case 'setSetting':
+          return <String, Object?>{};
+        case 'hasNotificationPermission':
+          return {'granted': true};
+        default:
+          throw MissingPluginException('no mock for ${call.method}');
+      }
+    });
+    final controller = AppController.test(
+      PrivilegedChannel(methodChannel: methodChannel),
+    );
+    addTearDown(controller.dispose);
+
+    // Tall viewport: the whole screen (ring + durations card) is
+    // laid out at once, so no scrolling is needed — a ListView
+    // unmounts scrolled-out children, which would hide the ring
+    // from finders after scrolling to the durations card.
+    tester.view.physicalSize = const Size(800, 4000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: azmDarkTheme(),
+        home: FocusModeScreen(controller: controller),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('25'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.byType(TextField), findsOneWidget);
+    await tester.enterText(find.byType(TextField), '90');
+    await tester.tap(find.text('Save'));
+    await tester.pump();
+    // The dialog's exit animation must finish before the row's
+    // number is unique again (its TextField shows the same value
+    // while the route animates out).
+    await tester.pump(const Duration(milliseconds: 500));
+
+    // Lengthened to 90: the idle ring shows the new focus length
+    // (formatClock renders 90 min as 1:30:00).
+    expect(find.text('90'), findsOneWidget);
+    expect(find.text('1:30:00'), findsOneWidget);
+
+    // Typing past the row max clamps (focus max is 120).
+    await tester.tap(find.text('90'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.enterText(find.byType(TextField), '999');
+    await tester.tap(find.text('Save'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text('120'), findsOneWidget);
+    expect(find.text('2:00:00'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox()); // dispose tickers
+  });
 }

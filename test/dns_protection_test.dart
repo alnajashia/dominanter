@@ -3,20 +3,25 @@
 ///
 ///  Model — hostname building per provider, validation mirroring the
 ///  native rule, JSON round-trip and corrupt-input defaults.
-///  Screen — the DNS shortcut card below the browsers and the full DNS
-///  card below the blocklists both render; enabling with CleanBrowsing
-///  calls setPrivateDns with the Family hostname; enabling with
-///  NextDNS and a blank ID is refused with the validation message and
-///  no channel call; entering an ID then enabling calls setPrivateDns
-///  with `<id>.dns.nextdns.io`; disabling goes through the recovery
-///  gate and calls resetPrivateDns.
+///  Screen — the DNS dialog in general Settings (Config tab): the
+///  browser screen has no DNS any more; the tile opens the dialog;
+///  the list is Off plus exactly one of CleanBrowsing / Cloudflare /
+///  AdGuard / Custom; picking Custom shows the hostname field at once
+///  (the old card's deadlock — the switch was refused so the field
+///  never appeared — is gone); an uppercase hostname is lowercased
+///  on apply; enabling with CleanBrowsing calls setPrivateDns with
+///  the Family hostname; turning off goes through the recovery gate
+///  and calls resetPrivateDns.
 ///
-///  DNS batch (2026-11-14, unification): one card, optional provider
-///  list (none = switch off, or exactly one of NextDNS / CleanBrowsing
-///  / Cloudflare / AdGuard / Custom); the Config-tab dialog is retired
-///  (its tile navigates to this card); the real failure reason is
-///  shown inline with a Retry button; HOST_NOT_SERVING is retried
-///  automatically; a live host the prefs do not know is adopted.
+///  NextDNS was removed at the user's request 2026-11-14: a saved
+///  NextDNS selection falls back to CleanBrowsing, and a live
+///  NextDNS hostname is adopted as a Custom hostname.
+///
+///  Item 5 (2026-11-14, DNS moved back to Settings): the card is
+///  gone; the dialog is the ONE DNS place, with the real failure
+///  reason shown inline with a Retry button; HOST_NOT_SERVING is
+///  retried automatically; a live host the prefs do not know is
+///  adopted.
 library;
 
 import 'dart:convert';
@@ -172,15 +177,46 @@ void main() {
     return c;
   }
 
-  /// Drives the recovery-gate dialog: types a 16-letter code and
-  /// confirms. The fake verifies it as correct.
+  /// Pumps in 1-second steps until [condition] holds (bounded): the
+  /// dialog's Apply button shows a spinner while loading, so
+  /// `pumpAndSettle` would never settle — and the HOST_NOT_SERVING
+  /// retry delays (2s/5s/8s) need the fake clock moved explicitly.
+  Future<void> pumpUntil(
+    WidgetTester tester,
+    bool Function() condition,
+  ) async {
+    for (var i = 0; i < 40 && !condition(); i++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+  }
+
+  /// Drives the recovery-gate dialog on top of the DNS dialog: types
+  /// a 16-letter code and confirms. Scoped to the gate dialog (the
+  /// DNS dialog's own fields are behind it) and uses explicit pumps
+  /// — the gate opens a few microtask turns after Apply is tapped,
+  /// and the DNS dialog's Apply button shows a spinner while loading,
+  /// so `pumpAndSettle` would never settle.
   Future<void> enterCodeAndConfirm(WidgetTester tester) async {
-    await tester.pumpAndSettle();
+    // Wait for the code stage, not just the dialog title: the gate
+    // opens in a loading stage (checking the code is set) and the
+    // code field only exists once it reaches the code stage.
+    await pumpUntil(
+      tester,
+      () =>
+          find.widgetWithText(FilledButton, 'Confirm').evaluate().isNotEmpty,
+    );
     expect(find.text('Enter recovery code'), findsOneWidget);
-    await tester.enterText(find.byType(TextField).first, 'AAAAAAAAAAAAAAAA');
+    final codeField = find.descendant(
+      of: find.ancestor(
+        of: find.text('Enter recovery code'),
+        matching: find.byType(AlertDialog),
+      ),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(codeField.first, 'AAAAAAAAAAAAAAAA');
     await tester.pump();
     await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
-    await tester.pumpAndSettle();
+    await tester.pump();
   }
 
   Future<AppController> pumpScreen(WidgetTester tester) async {
@@ -203,38 +239,38 @@ void main() {
     return controller;
   }
 
-  Future<void> tapDnsSwitch(WidgetTester tester) async {
-    await tester.tap(
-      find.descendant(
-        of: find.widgetWithText(SwitchListTile, 'DNS protection'),
-        matching: find.byType(Switch),
-      ),
-    );
+  /// Opens the DNS dialog from the Config-tab tile.
+  Future<void> openDnsDialog(WidgetTester tester) async {
+    await tester.tap(find.widgetWithText(ListTile, 'Private DNS'));
     await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
   }
 
-  /// Taps the DNS switch, then advances the fake clock past the
-  /// automatic retry delays (2s/5s/8s). `pumpAndSettle` alone does
-  /// NOT advance past a bare `Future.delayed` — it settles when no
-  /// frame is scheduled, and the retry loop schedules none between
-  /// attempts — so the clock must be moved explicitly.
-  Future<void> tapDnsSwitchAndSettleRetries(WidgetTester tester) async {
-    await tester.tap(
-      find.descendant(
-        of: find.widgetWithText(SwitchListTile, 'DNS protection'),
-        matching: find.byType(Switch),
-      ),
-    );
+  /// Taps a provider radio inside the open dialog.
+  Future<void> selectProvider(WidgetTester tester, String label) async {
+    await tester.tap(find.text(label));
     await tester.pump();
-    await tester.pump(const Duration(seconds: 3));
-    await tester.pump(const Duration(seconds: 6));
-    await tester.pump(const Duration(seconds: 9));
-    await tester.pumpAndSettle();
   }
 
-  SwitchListTile dnsTile(WidgetTester tester) => tester.widget<SwitchListTile>(
-        find.widgetWithText(SwitchListTile, 'DNS protection'),
+  FilledButton applyButton(WidgetTester tester) =>
+      tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Apply'),
       );
+
+  Future<void> tapApplyAndWait(
+    WidgetTester tester,
+    bool Function() condition,
+  ) async {
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await tester.pump();
+    await pumpUntil(tester, condition);
+  }
+
+  bool snackbarShows(String text) =>
+      find.descendant(
+        of: find.byType(SnackBar),
+        matching: find.text(text),
+      ).evaluate().isNotEmpty;
 
   // ------------------------------------------------------------ Model
 
@@ -254,42 +290,17 @@ void main() {
       expect(dns.isValid, isTrue);
     });
 
-    test('NextDNS hostname is built from the configuration ID', () {
-      const dns = DnsProtection(
-        enabled: true,
-        provider: DnsProvider.nextdns,
-        nextDnsConfigId: 'abc123',
-      );
-      expect(dns.hostname, 'abc123.dns.nextdns.io');
-      expect(dns.isValid, isTrue);
-    });
-
-    test('NextDNS without an ID cannot be applied', () {
-      const dns = DnsProtection(
-        enabled: true,
-        provider: DnsProvider.nextdns,
-      );
-      expect(dns.hostname, isNull);
-      expect(dns.isValid, isFalse);
-      expect(DnsProtection.isValidConfigId(''), isFalse);
-      expect(DnsProtection.isValidConfigId('has space'), isFalse);
-      expect(DnsProtection.isValidConfigId('has/slash'), isFalse);
-      expect(DnsProtection.isValidConfigId('abc123'), isTrue);
-    });
-
-    test('JSON round-trip for both providers', () {
+    test('JSON round-trip for every provider', () {
       for (final provider in DnsProvider.values) {
         final dns = DnsProtection(
           enabled: true,
           provider: provider,
-          nextDnsConfigId: 'abc123',
         );
         final back = DnsProtection.fromJson(
           (jsonDecode(jsonEncode(dns.toJson())) as Map).cast<String, dynamic>(),
         );
         expect(back.enabled, isTrue);
         expect(back.provider, provider);
-        expect(back.nextDnsConfigId, 'abc123');
         expect(back.hostname, dns.hostname);
       }
     });
@@ -335,8 +346,9 @@ void main() {
       expect(blank.isValid, isFalse);
     });
 
-    test('fromLiveHost maps every known host and extracts a NextDNS ID',
-        () {
+    test(
+        'fromLiveHost maps every known host; a legacy NextDNS host '
+        'becomes Custom', () {
       expect(DnsProtection.fromLiveHost(null).enabled, isFalse);
       expect(
         DnsProtection.fromLiveHost('family-filter-dns.cleanbrowsing.org')
@@ -351,10 +363,12 @@ void main() {
         DnsProtection.fromLiveHost('family.adguard-dns.com').provider,
         DnsProvider.adguard,
       );
-      final nextdns = DnsProtection.fromLiveHost('xyz123.dns.nextdns.io');
-      expect(nextdns.provider, DnsProvider.nextdns);
-      expect(nextdns.nextDnsConfigId, 'xyz123');
-      expect(nextdns.hostname, 'xyz123.dns.nextdns.io');
+      // A live NextDNS hostname is adopted as Custom — the host
+      // itself stays applied rather than being silently dropped.
+      final legacy = DnsProtection.fromLiveHost('xyz123.dns.nextdns.io');
+      expect(legacy.provider, DnsProvider.custom);
+      expect(legacy.customHostname, 'xyz123.dns.nextdns.io');
+      expect(legacy.hostname, 'xyz123.dns.nextdns.io');
       final custom = DnsProtection.fromLiveHost('dns.example.com');
       expect(custom.provider, DnsProvider.custom);
       expect(custom.customHostname, 'dns.example.com');
@@ -362,70 +376,123 @@ void main() {
         DnsProtection.fromLiveHost('family-filter-dns.cleanbrowsing.org'),
         DnsProtection.fromLiveHost('family.cloudflare-dns.com'),
         DnsProtection.fromLiveHost('family.adguard-dns.com'),
-        nextdns,
+        legacy,
         custom,
       ]) {
         expect(live.enabled, isTrue);
       }
     });
 
-    test('old JSON without customHostname still parses', () {
+    test('a stored NextDNS selection falls back to CleanBrowsing', () {
       final back = DnsProtection.fromJson({
         'enabled': true,
         'provider': 'nextdns',
         'nextDnsConfigId': 'abc',
       });
-      expect(back.provider, DnsProvider.nextdns);
+      expect(back.enabled, isTrue);
+      expect(back.provider, DnsProvider.cleanBrowsing);
       expect(back.customHostname, isEmpty);
-      expect(back.hostname, 'abc.dns.nextdns.io');
+      expect(back.hostname, DnsProtection.cleanBrowsingHostname);
     });
   });
 
-  // ------------------------------------------------------------ Screen
+  // ------------------------------------------------------------ Screen (dialog)
 
-  group('Batch DNS — browser screen', () {
-    testWidgets('DNS shortcut and full card both render', (tester) async {
+  group('Batch DNS — Settings dialog', () {
+    testWidgets('browser screen has no DNS anymore', (tester) async {
       await pumpScreen(tester);
 
-      // Three copies: shortcut title, card title, switch title.
-      expect(find.text('DNS protection'), findsNWidgets(3));
-      expect(find.text('NextDNS'), findsOneWidget);
-      expect(find.text('CleanBrowsing (Family filter)'), findsOneWidget);
-      expect(
-        find.textContaining('cannot block sites from inside'),
-        findsOneWidget,
-      );
-      expect(find.text('Private DNS is not set'), findsOneWidget);
-      expect(dnsTile(tester).value, isFalse);
+      expect(find.text('DNS protection'), findsNothing);
+      expect(find.text('Private DNS'), findsNothing);
+      // The browser work itself is untouched.
+      expect(find.text('Chrome'), findsOneWidget);
     });
 
-    testWidgets('selecting NextDNS shows the in-app setup steps',
+    testWidgets('Config-tab DNS tile opens the DNS dialog', (tester) async {
+      final controller = await pumpConfigTab(tester);
+
+      await openDnsDialog(tester);
+
+      // The dialog, not the browser screen, and not the retired dialog.
+      expect(find.byType(BrowserRestrictionsScreen), findsNothing);
+      expect(find.text('Off'), findsOneWidget);
+      expect(find.text('NextDNS'), findsNothing);
+      expect(find.text('CleanBrowsing (Family filter)'), findsOneWidget);
+      expect(find.text('Cloudflare (Family filter)'), findsOneWidget);
+      expect(find.text('AdGuard DNS (Family filter)'), findsOneWidget);
+      expect(find.text('Custom'), findsOneWidget);
+      controller.session.end();
+    });
+
+    testWidgets(
+      'the custom-DNS deadlock is fixed: picking Custom shows the '
+      'field at once',
+      (tester) async {
+        // Protection ON with CleanBrowsing — the exact state where
+        // the old card refused the switch and the field never appeared.
+        fakeDnsJson = jsonEncode(const DnsProtection(enabled: true).toJson());
+        fakeDnsMode = 'PRIVATE_DNS_MODE_PROVIDER_HOSTNAME_SPECIFIED';
+        fakeDnsHostname = 'family-filter-dns.cleanbrowsing.org';
+        await pumpConfigTab(tester);
+        await openDnsDialog(tester);
+
+        await selectProvider(tester, 'Custom');
+
+        // The field is there immediately — no refusal, no snackbar.
+        expect(find.byType(TextField), findsOneWidget);
+        expect(calls.where((c) => c.method == 'setPrivateDns'), isEmpty);
+        expect(find.text('Invalid DNS hostname'), findsNothing);
+        // Apply is disabled until the hostname is valid.
+        expect(applyButton(tester).onPressed, isNull);
+
+        await tester.enterText(find.byType(TextField), 'dns.example.com');
+        await tester.pump();
+        expect(applyButton(tester).onPressed, isNotNull);
+        await tapApplyAndWait(
+          tester,
+          () => snackbarShows('DNS protection applied'),
+        );
+
+        final applied = calls.where((c) => c.method == 'setPrivateDns');
+        expect(applied, hasLength(1));
+        expect(applied.first.arguments['hostname'], 'dns.example.com');
+        expect(find.byType(AlertDialog), findsNothing);
+      },
+    );
+
+    testWidgets('an uppercase custom hostname is lowercased on apply',
         (tester) async {
-      await pumpScreen(tester);
+      await pumpConfigTab(tester);
+      await openDnsDialog(tester);
+      await selectProvider(tester, 'Custom');
 
-      expect(find.text('How do I set up NextDNS?'), findsNothing);
-      await tester.tap(find.text('NextDNS'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('How do I set up NextDNS?'), findsOneWidget);
-      expect(
-        find.textContaining('Create a free account at nextdns.io'),
-        findsOneWidget,
+      // Uppercase is valid input here, not an error — it is
+      // normalised on apply (the model only accepts lowercase).
+      // (The normalised host also shows as the field's helper text,
+      // next to its identical hint — so no text assertion here.)
+      await tester.enterText(find.byType(TextField), 'DNS.Example.COM');
+      await tester.pump();
+      expect(find.text('Invalid DNS hostname'), findsNothing);
+      expect(applyButton(tester).onPressed, isNotNull);
+      await tapApplyAndWait(
+        tester,
+        () => snackbarShows('DNS protection applied'),
       );
-      expect(find.textContaining('Denylist'), findsOneWidget);
+
+      final applied = calls.where((c) => c.method == 'setPrivateDns');
+      expect(applied, hasLength(1));
+      expect(applied.first.arguments['hostname'], 'dns.example.com');
     });
 
     testWidgets('enabling with CleanBrowsing sets the Family hostname',
         (tester) async {
-      await pumpScreen(tester);
-
-      await tester.tap(
-        find.descendant(
-          of: find.widgetWithText(SwitchListTile, 'DNS protection'),
-          matching: find.byType(Switch),
-        ),
+      await pumpConfigTab(tester);
+      await openDnsDialog(tester);
+      await selectProvider(tester, 'CleanBrowsing (Family filter)');
+      await tapApplyAndWait(
+        tester,
+        () => snackbarShows('DNS protection applied'),
       );
-      await tester.pumpAndSettle();
 
       final applied = calls.where((c) => c.method == 'setPrivateDns');
       expect(applied, hasLength(1));
@@ -433,159 +500,50 @@ void main() {
         applied.first.arguments['hostname'],
         'family-filter-dns.cleanbrowsing.org',
       );
-      expect(find.text('DNS protection applied'), findsOneWidget);
-      expect(dnsTile(tester).value, isTrue);
-      expect(
-        find.text(
-          'Current host: family-filter-dns.cleanbrowsing.org',
-        ),
-        findsOneWidget,
-      );
+      final saved = (jsonDecode(fakeDnsJson!) as Map).cast<String, dynamic>();
+      expect(saved['enabled'], isTrue);
+      expect(saved['provider'], 'cleanBrowsing');
     });
 
-    testWidgets('enabling with NextDNS and a blank ID is refused',
-        (tester) async {
-      await pumpScreen(tester);
-
-      await tester.tap(find.text('NextDNS'));
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.descendant(
-          of: find.widgetWithText(SwitchListTile, 'DNS protection'),
-          matching: find.byType(Switch),
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(
-        calls.where((c) => c.method == 'setPrivateDns'),
-        isEmpty,
-      );
-      expect(
-        find.text('Enter a valid NextDNS configuration ID'),
-        findsOneWidget,
-      );
-      expect(dnsTile(tester).value, isFalse);
-    });
-
-    testWidgets('NextDNS ID then enable sets <id>.dns.nextdns.io',
-        (tester) async {
-      await pumpScreen(tester);
-
-      await tester.tap(find.text('NextDNS'));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'abc123');
-      await tester.testTextInput.receiveAction(TextInputAction.done);
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.descendant(
-          of: find.widgetWithText(SwitchListTile, 'DNS protection'),
-          matching: find.byType(Switch),
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      final applied = calls.where((c) => c.method == 'setPrivateDns');
-      expect(applied, hasLength(1));
-      expect(applied.first.arguments['hostname'], 'abc123.dns.nextdns.io');
-      expect(dnsTile(tester).value, isTrue);
-    });
-
-    testWidgets('disabling goes through the recovery gate and resets',
+    testWidgets('turning off goes through the recovery gate and resets',
         (tester) async {
       fakeDnsJson = jsonEncode(
         const DnsProtection(enabled: true).toJson(),
       );
       fakeDnsMode = 'PRIVATE_DNS_MODE_PROVIDER_HOSTNAME_SPECIFIED';
       fakeDnsHostname = 'family-filter-dns.cleanbrowsing.org';
-      final controller = await pumpScreen(tester);
-      expect(dnsTile(tester).value, isTrue);
+      final controller = await pumpConfigTab(tester);
+      await openDnsDialog(tester);
 
-      await tester.tap(
-        find.descendant(
-          of: find.widgetWithText(SwitchListTile, 'DNS protection'),
-          matching: find.byType(Switch),
-        ),
-      );
+      await selectProvider(tester, 'Off');
+      await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
       await enterCodeAndConfirm(tester);
+      await pumpUntil(
+        tester,
+        () => snackbarShows('DNS protection turned off'),
+      );
 
       expect(calls.where((c) => c.method == 'resetPrivateDns'), hasLength(1));
-      expect(find.text('DNS protection turned off'), findsOneWidget);
-      expect(dnsTile(tester).value, isFalse);
+      final saved = (jsonDecode(fakeDnsJson!) as Map).cast<String, dynamic>();
+      expect(saved['enabled'], isFalse);
+      // Let both dialogs' exit animations finish (explicit pump, not
+      // pumpAndSettle: the recovery session's ticker is now running).
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.byType(AlertDialog), findsNothing);
       controller.session.end();
-    });
-
-    testWidgets('provider list shows all five options', (tester) async {
-      await pumpScreen(tester);
-
-      expect(find.text('NextDNS'), findsOneWidget);
-      expect(find.text('CleanBrowsing (Family filter)'), findsOneWidget);
-      expect(find.text('Cloudflare (Family filter)'), findsOneWidget);
-      expect(find.text('AdGuard DNS (Family filter)'), findsOneWidget);
-      expect(find.text('Custom'), findsOneWidget);
-    });
-
-    testWidgets('selecting Cloudflare while on applies its hostname',
-        (tester) async {
-      await pumpScreen(tester);
-      await tapDnsSwitch(tester);
-      expect(dnsTile(tester).value, isTrue);
-
-      await tester.tap(find.text('Cloudflare (Family filter)'));
-      await tester.pumpAndSettle();
-
-      final applied = calls.where((c) => c.method == 'setPrivateDns');
-      expect(applied, hasLength(2));
-      expect(
-        applied.last.arguments['hostname'],
-        'family.cloudflare-dns.com',
-      );
-    });
-
-    testWidgets('custom host then enable applies it', (tester) async {
-      await pumpScreen(tester);
-
-      await tester.tap(find.text('Custom'));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'dns.example.com');
-      await tester.testTextInput.receiveAction(TextInputAction.done);
-      await tester.pumpAndSettle();
-      await tapDnsSwitch(tester);
-
-      final applied = calls.where((c) => c.method == 'setPrivateDns');
-      expect(applied, hasLength(1));
-      expect(applied.first.arguments['hostname'], 'dns.example.com');
-      expect(dnsTile(tester).value, isTrue);
-    });
-
-    testWidgets('invalid custom hostname is refused', (tester) async {
-      await pumpScreen(tester);
-
-      await tester.tap(find.text('Custom'));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'not a host');
-      await tester.testTextInput.receiveAction(TextInputAction.done);
-      await tester.pumpAndSettle();
-      await tapDnsSwitch(tester);
-
-      expect(calls.where((c) => c.method == 'setPrivateDns'), isEmpty);
-      expect(
-        find.descendant(
-          of: find.byType(SnackBar),
-          matching: find.text('Invalid DNS hostname'),
-        ),
-        findsOneWidget,
-      );
-      expect(dnsTile(tester).value, isFalse);
     });
 
     testWidgets('HOST_NOT_SERVING is retried and then applies',
         (tester) async {
       setPrivateDnsFailures = 2;
       setPrivateDnsFailureCode = 2;
-      await pumpScreen(tester);
-
-      await tapDnsSwitchAndSettleRetries(tester);
+      await pumpConfigTab(tester);
+      await openDnsDialog(tester);
+      await selectProvider(tester, 'CleanBrowsing (Family filter)');
+      await tapApplyAndWait(
+        tester,
+        () => snackbarShows('DNS protection applied'),
+      );
 
       // Two failures, then success on the third attempt.
       final applied = calls.where((c) => c.method == 'setPrivateDns');
@@ -594,8 +552,6 @@ void main() {
         applied.last.arguments['hostname'],
         'family-filter-dns.cleanbrowsing.org',
       );
-      expect(find.text('DNS protection applied'), findsOneWidget);
-      expect(dnsTile(tester).value, isTrue);
       expect(find.textContaining('not serving'), findsNothing);
     });
 
@@ -603,32 +559,30 @@ void main() {
         (tester) async {
       setPrivateDnsFailures = 10;
       setPrivateDnsFailureCode = 2;
-      await pumpScreen(tester);
-
-      await tapDnsSwitchAndSettleRetries(tester);
+      await pumpConfigTab(tester);
+      await openDnsDialog(tester);
+      await selectProvider(tester, 'CleanBrowsing (Family filter)');
+      await tapApplyAndWait(
+        tester,
+        () =>
+            find.text(
+              'The chosen DNS host is not serving. Pick another host.',
+            ).evaluate().isNotEmpty,
+      );
 
       // Four attempts (initial + 3 retries), then the inline error.
       expect(
         calls.where((c) => c.method == 'setPrivateDns'),
         hasLength(4),
       );
-      expect(
-        find.text('The chosen DNS host is not serving. Pick another host.'),
-        findsOneWidget,
-      );
       expect(find.text('Retry'), findsOneWidget);
-      expect(dnsTile(tester).value, isFalse);
 
       // Retry re-attempts the same selection.
       await tester.tap(find.text('Retry'));
       await tester.pump();
-      await tester.pump(const Duration(seconds: 3));
-      await tester.pump(const Duration(seconds: 6));
-      await tester.pump(const Duration(seconds: 9));
-      await tester.pumpAndSettle();
-      expect(
-        calls.where((c) => c.method == 'setPrivateDns'),
-        hasLength(8),
+      await pumpUntil(
+        tester,
+        () => calls.where((c) => c.method == 'setPrivateDns').length == 8,
       );
       expect(
         find.text('The chosen DNS host is not serving. Pick another host.'),
@@ -640,21 +594,21 @@ void main() {
         (tester) async {
       setPrivateDnsFailures = 1;
       setPrivateDnsFailureCode = 1;
-      await pumpScreen(tester);
-
-      await tapDnsSwitch(tester);
+      await pumpConfigTab(tester);
+      await openDnsDialog(tester);
+      await selectProvider(tester, 'CleanBrowsing (Family filter)');
+      await tapApplyAndWait(
+        tester,
+        () =>
+            find.text(
+              'Failed to apply the private DNS host (error code 1).',
+            ).evaluate().isNotEmpty,
+      );
 
       expect(
         calls.where((c) => c.method == 'setPrivateDns'),
         hasLength(1),
       );
-      expect(
-        find.text(
-          'Failed to apply the private DNS host (error code 1).',
-        ),
-        findsOneWidget,
-      );
-      expect(dnsTile(tester).value, isFalse);
     });
 
     testWidgets('a live host the prefs do not know is adopted',
@@ -662,31 +616,26 @@ void main() {
       fakeDnsJson = null;
       fakeDnsMode = 'PRIVATE_DNS_MODE_PROVIDER_HOSTNAME_SPECIFIED';
       fakeDnsHostname = 'family.adguard-dns.com';
-      await pumpScreen(tester);
+      await pumpConfigTab(tester);
 
-      // The device already enforces AdGuard; the card adopts the truth.
-      expect(dnsTile(tester).value, isTrue);
-      final saved =
-          (jsonDecode(fakeDnsJson!) as Map).cast<String, dynamic>();
+      // The device already enforces AdGuard; the tab adopts the truth.
+      final saved = (jsonDecode(fakeDnsJson!) as Map).cast<String, dynamic>();
       expect(saved['enabled'], isTrue);
       expect(saved['provider'], 'adguard');
       expect(
-        find.text('Enabled — AdGuard DNS (Family filter)'),
+        find.text('Forced host: family.adguard-dns.com'),
         findsOneWidget,
       );
-    });
 
-    testWidgets('Config-tab DNS tile opens the browser screen',
-        (tester) async {
-      final controller = await pumpConfigTab(tester);
-
-      await tester.tap(find.widgetWithText(ListTile, 'Private DNS'));
-      await tester.pumpAndSettle();
-
-      // The retired dialog never opens; the ONE DNS card does.
-      expect(find.byType(BrowserRestrictionsScreen), findsOneWidget);
-      expect(find.byType(AlertDialog), findsNothing);
-      controller.session.end();
+      await openDnsDialog(tester);
+      expect(
+        tester
+            .widget<RadioGroup<DnsProvider?>>(
+              find.byType(RadioGroup<DnsProvider?>),
+            )
+            .groupValue,
+        DnsProvider.adguard,
+      );
     });
   });
 }
