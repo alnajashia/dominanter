@@ -124,6 +124,22 @@ class AzmAccessibilityService : AccessibilityService() {
     private val windowEndRunnable = Runnable { executeBlocking(outsideWindow = true) }
     private val warnTickRunnable = Runnable { tickUsageWarning() }
 
+    // Manual-uninstall wedge fix: the deferred half of the
+    // accessibility-loss lockdown (F28). It used to run
+    // synchronously inside onUnbind — heavy privileged work (suspend
+    // every controlled package, add DISALLOW_INSTALL_APPS) plus an
+    // activity launch, landing inside the package manager's own
+    // removal operation when the unbind was caused by an uninstall
+    // in flight, wedging system_server for ~30 min. Posting it
+    // instead means a process being torn down for uninstall dies
+    // before the delay elapses and the work never runs; a genuine
+    // disable keeps the process alive, so the lockdown still
+    // engages, ~1.5 s later, after the fire-time re-checks in
+    // runDeferredAccessibilityLockdown().
+    private val deferredAccessibilityLockdownRunnable = Runnable {
+        runDeferredAccessibilityLockdown()
+    }
+
     // Colour modes (Batch C, C3 — GRAYSCALE_RESEARCH.md §6.2): the
     // enforcement loop state. The observer re-enforces when any of the
     // seven secure keys changes externally; the runnable re-arms the
@@ -356,6 +372,16 @@ class AzmAccessibilityService : AccessibilityService() {
         /** The original's warning re-check cadence (DechainerAccessibilityService.kt:403). */
         private const val USAGE_WARNING_TICK_INTERVAL_MS = 2000L
 
+        /**
+         * Manual-uninstall wedge fix: how long the accessibility-loss
+         * lockdown (F28) waits after onUnbind before firing. A process
+         * being torn down for an uninstall is killed well inside this
+         * window, so the deferred work never runs inside the package
+         * manager's removal operation; a genuine disable keeps the
+         * process alive, so the lockdown still engages, 1.5 s later.
+         */
+        private const val ACCESSIBILITY_LOCKDOWN_DEFER_MS = 1500L
+
         /** The original's visual-scan throttle (DechainerAccessibilityService.kt:401). */
         private const val VISUAL_SCAN_INTERVAL_MS = 2000L
 
@@ -426,6 +452,10 @@ class AzmAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        // A pending deferred accessibility-loss lockdown (posted by
+        // the previous onUnbind) is cancelled: the service is back,
+        // so the loss that triggered it no longer exists.
+        handler.removeCallbacks(deferredAccessibilityLockdownRunnable)
         if (SettingsStore.isProtectionTornDown()) {
             disableSelf()
             return
@@ -557,6 +587,19 @@ class AzmAccessibilityService : AccessibilityService() {
         // launch during the post-removal uninstall. With the admin
         // inactive there is no enforcement left to protect, so the whole
         // lockdown is skipped.
+        //
+        // Manual-uninstall wedge fix: the lockdown no longer runs
+        // here, synchronously. A manual uninstall from Settings never
+        // sets the disarm flags, so the old code fired the full
+        // lockdown inside the package manager's removal operation and
+        // the phone entered a ~30 min error phase, heating, before the
+        // system asked to confirm the removal. The work is now posted
+        // with a 1.5 s delay (see
+        // deferredAccessibilityLockdownRunnable): a process being
+        // torn down for uninstall dies before the delay elapses, so
+        // the lockdown never runs inside the removal operation; a
+        // genuine disable keeps the process alive and the lockdown
+        // still engages, after the fire-time re-checks.
         val dpmForAdminCheck = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val adminComponent = ComponentName(this, AzmDeviceAdminReceiver::class.java)
         if (!SettingsStore.isProtectionTornDown() &&
@@ -564,32 +607,59 @@ class AzmAccessibilityService : AccessibilityService() {
             !SettingsStore.consumeIntentionalAccessibilityDisable() &&
             dpmForAdminCheck.isAdminActive(adminComponent)
         ) {
-            val controlled = SettingsStore.controlledPackages()
-            if (controlled.isNotEmpty()) {
-                suspendPackages(
-                    controlled.toTypedArray(),
-                    suspend = true,
-                    reason = SuspensionReason.ACCESSIBILITY_DISABLED,
-                )
-            }
-            try {
-                dpmForAdminCheck.addUserRestriction(
-                    adminComponent,
-                    UserManager.DISALLOW_INSTALL_APPS,
-                )
-            } catch (_: Exception) { /* not owner — lockdown is best-effort without it */ }
-            AzmState.eventSink?.invoke(
-                "accessibilityStatus",
-                mapOf("controlledPackagesSuspended" to controlled.isNotEmpty()),
-            )
-            startActivity(
-                Intent(this, AccessibilityRequestActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                },
+            // A re-post replaces any pending one: a second unbind
+            // without a reconnect must not fire the lockdown twice.
+            handler.removeCallbacks(deferredAccessibilityLockdownRunnable)
+            handler.postDelayed(
+                deferredAccessibilityLockdownRunnable,
+                ACCESSIBILITY_LOCKDOWN_DEFER_MS,
             )
         }
         emitState()
         return super.onUnbind(intent)
+    }
+
+    // The deferred half of F28 (manual-uninstall wedge fix): runs
+    // ACCESSIBILITY_LOCKDOWN_DEFER_MS after an unbind that looked
+    // like an accessibility loss, on the main thread. The fire-time
+    // re-checks mirror the onUnbind conditions — the service may
+    // have reconnected (also cancelled in onServiceConnected), a
+    // teardown may have started, the admin may have been
+    // deactivated in the meantime, or the intentional-disable flag
+    // may have been armed inside the window. And when the unbind
+    // was really an uninstall in flight, this code never runs at
+    // all: the process is killed before the delay elapses. The
+    // ~1.5 s enforcement delay on a genuine loss is the deliberate
+    // trade for never wedging system_server on uninstall.
+    private fun runDeferredAccessibilityLockdown() {
+        if (AzmState.accessibilityServiceRunning) return
+        if (SettingsStore.isProtectionTornDown() ||
+            SettingsStore.isRemovalInProgress()
+        ) return
+        if (SettingsStore.consumeIntentionalAccessibilityDisable()) return
+        val dpm = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val admin = ComponentName(this, AzmDeviceAdminReceiver::class.java)
+        if (!dpm.isAdminActive(admin)) return
+        val controlled = SettingsStore.controlledPackages()
+        if (controlled.isNotEmpty()) {
+            suspendPackages(
+                controlled.toTypedArray(),
+                suspend = true,
+                reason = SuspensionReason.ACCESSIBILITY_DISABLED,
+            )
+        }
+        try {
+            dpm.addUserRestriction(admin, UserManager.DISALLOW_INSTALL_APPS)
+        } catch (_: Exception) { /* not owner — lockdown is best-effort without it */ }
+        AzmState.eventSink?.invoke(
+            "accessibilityStatus",
+            mapOf("controlledPackagesSuspended" to controlled.isNotEmpty()),
+        )
+        startActivity(
+            Intent(this, AccessibilityRequestActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            },
+        )
     }
 
     override fun onDestroy() {
