@@ -181,14 +181,16 @@ void main() {
     return c;
   }
 
-  Future<void> pumpScreen(WidgetTester tester) async {
+  Future<AppController> pumpScreen(WidgetTester tester) async {
+    final controller = makeController();
     await tester.pumpWidget(
-      buildTestApp(child: LockdownScreen(controller: makeController())),
+      buildTestApp(child: LockdownScreen(controller: controller)),
     );
     // Flush the async loads (state, groups, apps).
     for (var i = 0; i < 6; i++) {
       await tester.pump();
     }
+    return controller;
   }
 
   Future<void> enterCodeAndConfirm(WidgetTester tester) async {
@@ -260,10 +262,46 @@ void main() {
       });
       expect(l, isNotNull);
       expect(l!.kind, LockdownKind.oneShot);
-      expect(l.durationMinutes, 720);
+      expect(l.durationMinutes, 1440);
+      expect(l.durationSeconds, 86400);
       expect(l.startHour, 23);
       expect(l.daysOfWeek, {1, 5});
       expect(l.scope, LockdownScope.allApps);
+    });
+
+    test('duration is seconds: round-trip, clamp, legacy minutes', () {
+      // Seconds round-trip (toMap carries both keys).
+      const l = Lockdown(id: 's', durationSeconds: 5400);
+      final back = Lockdown.fromMap(l.toMap());
+      expect(back, l);
+      expect(back?.durationSeconds, 5400);
+      expect(back?.durationMinutes, 90);
+      // Seconds clamp to 60..86400 (1 min..24 h).
+      expect(
+        Lockdown.fromMap({'id': 'a', 'durationSeconds': 30})
+            ?.durationSeconds,
+        60,
+      );
+      expect(
+        Lockdown.fromMap({'id': 'b', 'durationSeconds': 90000})
+            ?.durationSeconds,
+        86400,
+      );
+      // Legacy minutes-only JSON falls back to minutes.
+      expect(
+        Lockdown.fromMap({'id': 'c', 'durationMinutes': 90})
+            ?.durationSeconds,
+        5400,
+      );
+      // Seconds win when both keys are present.
+      expect(
+        Lockdown.fromMap({
+          'id': 'd',
+          'durationSeconds': 120,
+          'durationMinutes': 90,
+        })?.durationSeconds,
+        120,
+      );
     });
 
     test('daysSummary variants', () {
@@ -302,6 +340,15 @@ void main() {
   });
 
   // ------------------------------------------------------------ widget
+
+  /// The durationSeconds the last startLockdown call carried.
+  int startedDurationSeconds() {
+    final lockdown = Map<String, dynamic>.from(
+      calls.lastWhere((c) => c.method == 'startLockdown').arguments['lockdown']
+          as Map,
+    );
+    return (lockdown['durationSeconds'] as num).toInt();
+  }
 
   group('LockdownScreen', () {
     testWidgets('lists the window and the start card when idle',
@@ -342,6 +389,107 @@ void main() {
       expect(find.text('End lockdown early'), findsOneWidget);
     });
 
+    testWidgets('duration slider sets the lockdown length',
+        (tester) async {
+      await pumpScreen(tester);
+      // Drive the slider's callback directly: dragging by pixels
+      // cannot hit an exact minute.
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(90);
+      await tester.pump();
+      expect(find.text('1:30:00'), findsOneWidget);
+      await tester.tap(find.text('Start lockdown'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      expect(startedDurationSeconds(), 5400);
+    });
+
+    testWidgets('typed total minutes apply at once', (tester) async {
+      await pumpScreen(tester);
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Total minutes'),
+        '30',
+      );
+      await tester.pump();
+      expect(find.text('30:00'), findsOneWidget);
+      await tester.tap(find.text('Start lockdown'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      expect(startedDurationSeconds(), 1800);
+    });
+
+    testWidgets('typed minutes clamp to 24 hours on submit',
+        (tester) async {
+      await pumpScreen(tester);
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Total minutes'),
+        '9999',
+      );
+      await tester.pump();
+      // Out of range: nothing applied yet, the slider stays at 3:00:00.
+      expect(find.text('3:00:00'), findsOneWidget);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('24:00:00'), findsOneWidget);
+      await tester.tap(find.text('Start lockdown'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      expect(startedDurationSeconds(), 86400);
+    });
+
+    testWidgets('hours-minutes-seconds entry composes the duration',
+        (tester) async {
+      await pumpScreen(tester);
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Hours'),
+        '2',
+      );
+      await tester.pump();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Minutes'),
+        '30',
+      );
+      await tester.pump();
+      expect(find.text('2:30:00'), findsOneWidget);
+      await tester.tap(find.text('Start lockdown'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      expect(startedDurationSeconds(), 9000);
+    });
+
+    testWidgets('hours-minutes-seconds below one minute clamp on submit',
+        (tester) async {
+      await pumpScreen(tester);
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Hours'),
+        '0',
+      );
+      await tester.pump();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Minutes'),
+        '0',
+      );
+      await tester.pump();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Seconds'),
+        '30',
+      );
+      await tester.pump();
+      // 30 seconds is below the 1-minute floor: nothing applied yet.
+      expect(find.text('3:00:00'), findsOneWidget);
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+      expect(find.text('01:00'), findsOneWidget);
+      await tester.tap(find.text('Start lockdown'));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump();
+      }
+      expect(startedDurationSeconds(), 60);
+    });
+
     testWidgets('the active countdown ticks down', (tester) async {
       fakeActive = activeLockdown();
       await pumpScreen(tester);
@@ -358,6 +506,29 @@ void main() {
       expect(methodCalled('endLockdown'), isTrue);
       expect(find.text('Start a lockdown'), findsOneWidget);
     });
+
+    testWidgets(
+      'ending early still asks for the code with an active session',
+      (tester) async {
+        // Tier 1 end-early demands FRESH code entry (user request
+        // 2026-11-14), like the Tier 2 kiosk activity's native check:
+        // an already-active recovery session must NOT let the
+        // lockdown end without the code.
+        fakeActive = activeLockdown();
+        final controller = await pumpScreen(tester);
+        controller.session.start();
+        await tester.pump();
+        await tester.tap(find.text('End lockdown early'));
+        for (var i = 0; i < 4; i++) {
+          await tester.pump();
+        }
+        expect(find.text('Enter recovery code'), findsOneWidget);
+        expect(methodCalled('endLockdown'), isFalse);
+        await enterCodeAndConfirm(tester);
+        expect(methodCalled('endLockdown'), isTrue);
+        expect(find.text('Start a lockdown'), findsOneWidget);
+      },
+    );
 
     testWidgets('adding a window goes through the code gate',
         (tester) async {

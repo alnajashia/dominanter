@@ -306,6 +306,85 @@ void main() {
       expect(back.active, isTrue);
       expect(back.accumulated, const Duration(hours: 3));
     });
+
+    test('filing stamps wall + elapsed; due when both clocks pass '
+        'the delay — even with zero accumulated ticks', () {
+      final filedAt = DateTime(2026, 11, 14, 10);
+      var fr = const ForcedRemoval().start(
+        atWall: filedAt,
+        atElapsed: const Duration(hours: 5),
+      );
+      expect(fr.startedAtWall, filedAt);
+      expect(fr.startedAtElapsed, const Duration(hours: 5));
+      // Zero accumulated ticks: not due before the delay.
+      expect(
+        fr.isDueAt(
+          wallNow: filedAt.add(const Duration(hours: 23)),
+          elapsedNow: const Duration(hours: 28),
+        ),
+        isFalse,
+      );
+      // Both clocks past 24 h since filing: due, ticks or no ticks.
+      expect(
+        fr.isDueAt(
+          wallNow: filedAt.add(const Duration(hours: 25)),
+          elapsedNow: const Duration(hours: 29),
+        ),
+        isTrue,
+      );
+      // Only one clock past the delay: not due (both legs required).
+      expect(
+        fr.isDueAt(
+          wallNow: filedAt.add(const Duration(hours: 25)),
+          elapsedNow: const Duration(hours: 10),
+        ),
+        isFalse,
+      );
+    });
+
+    test('isDueAt is reboot-aware: elapsed restarts count from reboot', () {
+      final filedAt = DateTime(2026, 11, 14, 10);
+      final fr = const ForcedRemoval().start(
+        atWall: filedAt,
+        atElapsed: const Duration(hours: 100),
+      );
+      // Rebooted after filing; 25 h of wall time and 25 h of elapsed
+      // time since the reboot: due.
+      expect(
+        fr.isDueAt(
+          wallNow: filedAt.add(const Duration(hours: 25)),
+          elapsedNow: const Duration(hours: 25),
+        ),
+        isTrue,
+      );
+      // Same wall time but only 1 h since the reboot: not due.
+      expect(
+        fr.isDueAt(
+          wallNow: filedAt.add(const Duration(hours: 25)),
+          elapsedNow: const Duration(hours: 1),
+        ),
+        isFalse,
+      );
+    });
+
+    test('timestamps survive advance/withTotal/json and clear on cancel',
+        () {
+      var fr = const ForcedRemoval().start(
+        atWall: DateTime(2026, 11, 14, 10),
+        atElapsed: const Duration(hours: 5),
+      );
+      fr = fr.advance(const Duration(hours: 2));
+      fr = fr.withTotal(const Duration(hours: 12));
+      expect(fr.startedAtWall, DateTime(2026, 11, 14, 10));
+      expect(fr.startedAtElapsed, const Duration(hours: 5));
+      final back = ForcedRemoval.fromJson(fr.toJson());
+      expect(back.startedAtWall, DateTime(2026, 11, 14, 10));
+      expect(back.startedAtElapsed, const Duration(hours: 5));
+      final cancelled = fr.cancel();
+      expect(cancelled.active, isFalse);
+      expect(cancelled.startedAtWall, isNull);
+      expect(cancelled.startedAtElapsed, isNull);
+    });
   });
 
   group('ImpulseLock', () {
