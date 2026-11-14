@@ -2,7 +2,9 @@ package com.alnajashia.azm.channel
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -173,6 +175,33 @@ class PrivilegedChannelHandler(
             // Dart side reads it from this state map.
             "forcedRemovalDelayHours" to RecoveryStore.FORCED_REMOVAL_DELAY_HOURS,
         )
+        // Elapsed-realtime clock for the forced-removal dual-clock
+        // due check (item 6): the Dart 30 s tick stalls when the app
+        // process is killed, the clocks do not. A plain getter —
+        // no state is consulted or changed.
+        "getElapsedRealtimeMs" -> mapOf(
+            "elapsedRealtimeMs" to android.os.SystemClock.elapsedRealtime(),
+        )
+        // In-app self-uninstall (manual-uninstall wedge fix): opens
+        // the system uninstaller for Azm's own package. The app
+        // cannot uninstall itself silently — ACTION_DELETE always
+        // shows the system's own confirmation dialog — and while
+        // Device Owner is still active the system refuses, so the UI
+        // offers this only after a clean teardown (outcome dialog)
+        // or when the app is not the owner at all (danger-zone
+        // tile). The manual Settings path wedged system_server
+        // because the accessibility-loss lockdown fired inside the
+        // removal operation; this route goes through the in-app
+        // teardown first, which disarms that lockdown before
+        // anything stops.
+        "requestSelfUninstall" -> {
+            val intent = Intent(
+                Intent.ACTION_DELETE,
+                Uri.parse("package:${appContext.packageName}"),
+            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            val started = runCatching { appContext.startActivity(intent) }.isSuccess
+            mapOf("started" to started)
+        }
         "setWindowSecure" -> {
             val enabled = call.argument<Boolean>("enabled") ?: false
             WindowSecurityBridge.setSecure(enabled)
@@ -225,6 +254,12 @@ class PrivilegedChannelHandler(
             }
         }
         "getColourModesStatus" -> colourModesStatus()
+        // Whether any colour mode is currently enforced (the teardown's
+        // colour step needs the WRITE_SECURE_SETTINGS grant to release
+        // them — the removal pre-flight warns before tearing down).
+        "hasEnforcedColourModes" -> mapOf(
+            "enforced" to ColourModesController.isApplied(appContext),
+        )
         "syncColourModes" -> {
             val running = AzmAccessibilityService.requestColourModesSync()
             mapOf("ok" to running)
