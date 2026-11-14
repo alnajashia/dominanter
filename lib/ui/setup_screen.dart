@@ -26,6 +26,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../app_controller.dart';
+import '../build_info.dart';
 import '../data/privileged_channel.dart';
 import '../domain/seal_rules.dart';
 import '../l10n/l10n.dart';
@@ -546,6 +547,15 @@ class _SetupScreenState extends State<SetupScreen> {
                         ? context.l10n.deviceOwnerYes
                         : context.l10n.deviceOwnerNo('$_isAdmin'),
                   ),
+                ),
+                // Build stamp (deadlock re-audit fix J): the git HEAD +
+                // build date, so a screenshot can prove which build is
+                // installed — the "1.0.0" footer cannot, because the
+                // app is always version 1.0.0.
+                ListTile(
+                  leading: const Icon(Icons.build_outlined),
+                  title: Text(context.l10n.buildStamp),
+                  subtitle: Text('$buildGitHead • $buildDate'),
                 ),
                 if (!_isOwner && blocker != null)
                   Padding(
