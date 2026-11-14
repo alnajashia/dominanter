@@ -650,8 +650,6 @@
   "dnsProtectionNote": "هذا المتصفح لا يدعم حظر المواقع من داخله، فلا يمكن حظر المواقع فيه حظراً كاملاً. حماية DNS بدلاً من ذلك تحظر النطاقات المحظورة على مستوى الجهاز كله — كل المتصفحات والتطبيقات — وعلى مستوى النطاق فقط، لا على مستوى الصفحات داخل الموقع.",
   "dnsProtectionEnabled": "مفعّلة",
   "dnsProtectionDisabled": "متوقفة",
-  "dnsProviderNextdns": "NextDNS",
-  "dnsProviderNextdnsNote": "قائمتك الخاصة (تُدار من لوحة تحكم NextDNS)",
   "dnsProviderCleanbrowsing": "CleanBrowsing (فلتر العائلة)",
   "dnsProviderCleanbrowsingNote": "محتوى البالغين والبروكسيات، بلا حساب",
   "dnsProviderCloudflare": "Cloudflare (فلتر العائلة)",
@@ -669,21 +667,6 @@
       }
     }
   },
-  "dnsConfigIdLabel": "رمز إعداد NextDNS",
-  "dnsConfigIdHint": "مثال: abc123",
-  "dnsConfigIdHostname": "اسم المضيف: {id}.dns.nextdns.io",
-  "@dnsConfigIdHostname": {
-    "placeholders": {
-      "id": {
-        "type": "String"
-      }
-    }
-  },
-  "dnsNextdnsHowTitle": "كيف أُعدّ NextDNS؟",
-  "dnsNextdnsStep1": "١. أنشئ حساباً مجانياً في nextdns.io (بريد وكلمة مرور، بلا بطاقة).",
-  "dnsNextdnsStep2": "٢. انسخ رمز الإعداد من تبويب Setup في لوحة التحكم.",
-  "dnsNextdnsStep3": "٣. أضف المواقع إلى Denylist من تبويب Privacy، وفعّل Block Bypass Methods من Settings.",
-  "dnsNextdnsStep4": "٤. الصق الرمز في الحقل أعلاه وفعّل الحماية — وسيضبطها عزم ويقفلها.",
   "torrentTitle": "حظر تطبيقات التورنت",
   "torrentSub": "يعلّق أي تطبيق تورنت مثبّت الآن وأي تطبيق يُثبَّت لاحقاً",
   "torrentDetectedNone": "لم يتم العثور على تطبيقات تورنت في هذا الهاتف",
@@ -705,7 +688,6 @@
   "autoBlockUninstallSub": "ما دام مفعّلاً، لا يمكن إلغاء تثبيت أي تطبيق معلَّق أو محظور",
   "autoBlockUninstallOn": "تم حظر إلغاء تثبيت التطبيقات المعلَّقة",
   "autoBlockUninstallOff": "تم السماح بإلغاء تثبيت التطبيقات المعلَّقة",
-  "dnsInvalidConfigId": "أدخل رمز إعداد NextDNS صحيحاً",
   "dnsCurrentHost": "المضيف الحالي: {hostname}",
   "@dnsCurrentHost": {
     "placeholders": {
@@ -715,6 +697,7 @@
     }
   },
   "dnsNotSet": "DNS الخاص غير مضبوط",
+  "dnsOff": "إيقاف",
   "dnsApplied": "تم تطبيق حماية DNS",
   "dnsTurnedOff": "تم إيقاف حماية DNS",
   "dnsSettings": "الإعدادات",
@@ -894,6 +877,11 @@
   "dangerZone": "منطقة الخطر",
   "removeOwnerNow": "إزالة مالك الجهاز الآن",
   "removeOwnerNowSub": "إزالة فورية، داخل جلسة استرداد — كل قيد يفرضه هذا التطبيق يتوقف فوراً.",
+  "uninstallAzm": "إلغاء تثبيت عزم",
+  "uninstallAzmSub": "إزالة عزم من هذا الهاتف — يفتح مثبت إلغاء التثبيت في النظام.",
+  "uninstallAzmConfirmTitle": "إلغاء تثبيت عزم؟",
+  "uninstallAzmConfirmBody": "سيفتح هذا مثبت إلغاء التثبيت في النظام لعزم. إذا أكدت هناك، يُزال التطبيق من الهاتف. وأي قيد يفرضه يتوقف معه — تأكد أولاً من إتمام إزالة مالك الجهاز أعلاه.",
+  "uninstallNotStarted": "تعذّر فتح مثبت إلغاء التثبيت في النظام.",
   "forcedIdleSub": "المخرج الوحيد بلا رمز: بعد 24 ساعة يمكن إزالة مالك الجهاز دون رمز الاسترداد.",
   "forcedCompleteSub": "اكتمل — يمكن إنهاء الإزالة الآن دون رمز.",
   "forcedProgressSub": "جارٍ — تبقّى {remaining} (يتقدم أثناء عمل التطبيق)",
@@ -1393,7 +1381,11 @@
   },
   "lockdownEndEarly": "إنهاء الإغلاق مبكرًا",
   "lockdownStartTitle": "بدء إغلاق",
-  "lockdownDuration": "المدة (بالدقائق)",
+  "lockdownDuration": "المدة",
+  "lockdownDurationTotalMinutes": "إجمالي الدقائق",
+  "lockdownDurationHours": "ساعات",
+  "lockdownDurationMinutes": "دقائق",
+  "lockdownDurationSeconds": "ثوانٍ",
   "lockdownScope": "ينطبق على",
   "lockdownScopeAll": "الهاتف كله",
   "lockdownScopeApps": "تطبيقات مختارة",
@@ -2095,5 +2087,15 @@
         "type": "String"
       }
     }
-  }
+  },
+  "removalStepLockdown": "إنهاء الإغلاق النشط",
+  "removalStepRemoveAdmin": "إزالة مسؤول الجهاز",
+  "removalStepStopAccessibility": "إيقاف خدمة الوصول",
+  "removalStepSkipped": "تخطّى — يتطلب مالك الجهاز",
+  "removalReprovisionGuidance": "أُزيل مالك الجهاز سابقاً، لكن بعض السياسات لا يمكن مسحها إلا بإعادة التثبيت كمالك للجهاز (عبر Shizuku) ثم إعادة التفكيك.",
+  "removalColourPreflightTitle": "قد تفشل استعادة الألوان",
+  "removalColourPreflightBody": "أوضاع الألوان مفعّلة حالياً، لكن إذن WRITE_SECURE_SETTINGS غير ممنوح (Shizuku متوقف). أعد تشغيل Shizuku ومنح الإذن أولاً ثم أعد التفكيك — أو تابع على أي حال.",
+  "removalColourPreflightContinue": "متابعة على أي حال",
+  "authBiometricLockedOut": "البصمة مقفلة مؤقتاً بعد محاولات فاشلة — استخدم رمز الجهاز (PIN/النمط/كلمة المرور) للدخول.",
+  "buildStamp": "البناء"
 }
