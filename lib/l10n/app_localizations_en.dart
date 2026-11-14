@@ -1031,13 +1031,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get dnsProtectionDisabled => 'Disabled';
 
   @override
-  String get dnsProviderNextdns => 'NextDNS';
-
-  @override
-  String get dnsProviderNextdnsNote =>
-      'Your own blocklist (managed in the NextDNS dashboard)';
-
-  @override
   String get dnsProviderCleanbrowsing => 'CleanBrowsing (Family filter)';
 
   @override
@@ -1070,36 +1063,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String dnsApplyFailedCode(int code) {
     return 'Failed to apply the private DNS host (error code $code).';
   }
-
-  @override
-  String get dnsConfigIdLabel => 'NextDNS configuration ID';
-
-  @override
-  String get dnsConfigIdHint => 'e.g. abc123';
-
-  @override
-  String dnsConfigIdHostname(String id) {
-    return 'Hostname: $id.dns.nextdns.io';
-  }
-
-  @override
-  String get dnsNextdnsHowTitle => 'How do I set up NextDNS?';
-
-  @override
-  String get dnsNextdnsStep1 =>
-      '1. Create a free account at nextdns.io (email and password, no card).';
-
-  @override
-  String get dnsNextdnsStep2 =>
-      '2. Copy the configuration ID from the Setup tab in the dashboard.';
-
-  @override
-  String get dnsNextdnsStep3 =>
-      '3. Add sites to the Denylist from the Privacy tab, and turn on Block Bypass Methods in Settings.';
-
-  @override
-  String get dnsNextdnsStep4 =>
-      '4. Paste the ID in the field above and turn protection on — Azm sets it and locks it.';
 
   @override
   String get torrentTitle => 'Block torrent apps';
@@ -1179,15 +1142,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get autoBlockUninstallOff => 'Uninstall allowed for suspended apps';
 
   @override
-  String get dnsInvalidConfigId => 'Enter a valid NextDNS configuration ID';
-
-  @override
   String dnsCurrentHost(String hostname) {
     return 'Current host: $hostname';
   }
 
   @override
   String get dnsNotSet => 'Private DNS is not set';
+
+  @override
+  String get dnsOff => 'Off';
 
   @override
   String get dnsApplied => 'DNS protection applied';
@@ -1498,6 +1461,24 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get removeOwnerNowSub =>
       'Immediate, inside a recovery session — every restriction this app enforces stops at once.';
+
+  @override
+  String get uninstallAzm => 'Uninstall Azm';
+
+  @override
+  String get uninstallAzmSub =>
+      'Remove Azm from this phone — opens the system uninstaller.';
+
+  @override
+  String get uninstallAzmConfirmTitle => 'Uninstall Azm?';
+
+  @override
+  String get uninstallAzmConfirmBody =>
+      'This opens the system uninstaller for Azm. If you confirm there, the app is removed from this phone. Any restriction it enforces stops with it — make sure the Device Owner removal above is finished first.';
+
+  @override
+  String get uninstallNotStarted =>
+      'The system uninstaller could not be opened.';
 
   @override
   String get forcedIdleSub =>
@@ -2569,7 +2550,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get lockdownStartTitle => 'Start a lockdown';
 
   @override
-  String get lockdownDuration => 'Duration (minutes)';
+  String get lockdownDuration => 'Duration';
+
+  @override
+  String get lockdownDurationTotalMinutes => 'Total minutes';
+
+  @override
+  String get lockdownDurationHours => 'Hours';
+
+  @override
+  String get lockdownDurationMinutes => 'Minutes';
+
+  @override
+  String get lockdownDurationSeconds => 'Seconds';
 
   @override
   String get lockdownScope => 'Applies to';
@@ -3509,4 +3502,37 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get scratchToReveal => 'Scratch to reveal';
+
+  @override
+  String get removalStepLockdown => 'End active lockdown';
+
+  @override
+  String get removalStepRemoveAdmin => 'Remove Device Admin';
+
+  @override
+  String get removalStepStopAccessibility => 'Stop accessibility service';
+
+  @override
+  String get removalStepSkipped => 'skipped — requires Device Owner';
+
+  @override
+  String get removalReprovisionGuidance =>
+      'The owner was already removed earlier, but some policies can only be cleared by re-provisioning as Device Owner (via Shizuku) and then removing again.';
+
+  @override
+  String get removalColourPreflightTitle => 'Colour restore may fail';
+
+  @override
+  String get removalColourPreflightBody =>
+      'Colour modes are currently enforced, but the WRITE_SECURE_SETTINGS permission is not granted (Shizuku is stopped). Restart Shizuku and re-grant the permission first, then remove again — or continue anyway.';
+
+  @override
+  String get removalColourPreflightContinue => 'Continue anyway';
+
+  @override
+  String get authBiometricLockedOut =>
+      'Biometrics are locked out after failed attempts — use your device PIN, pattern or password to unlock.';
+
+  @override
+  String get buildStamp => 'Build';
 }
