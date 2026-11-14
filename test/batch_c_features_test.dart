@@ -62,6 +62,13 @@ void main() {
   // native logic itself is verified by code reading (this repo has
   // no Kotlin unit-test harness — all tests are Dart).
   late bool fakeForcedRemovalDue;
+  // Item 6 wiring: the elapsed-realtime clock the fake reports for
+  // getElapsedRealtimeMs (ms since boot), whether that method throws
+  // (an old native side), and the persisted forced-removal JSON the
+  // fake serves for the recovery_prefs store.
+  late int fakeElapsedRealtimeMs;
+  late bool fakeElapsedThrows;
+  late String? fakeForcedRemovalJson;
   late String? fakeBlocklistsJson;
 
   /// Controllers created in a test: their recovery sessions arm a
@@ -138,6 +145,9 @@ void main() {
     fakeVerifyCodeMatches = true;
     fakeRemoveOwnerThrowsSealed = false;
     fakeForcedRemovalDue = false;
+    fakeElapsedRealtimeMs = 18 * 60 * 60 * 1000; // 5 h since boot
+    fakeElapsedThrows = false;
+    fakeForcedRemovalJson = null;
     fakeBlocklistsJson = null;
 
     messenger.setMockMethodCallHandler(methodChannel, (call) async {
@@ -149,6 +159,11 @@ void main() {
             'isAdminActive': true,
             'forcedRemovalDelayHours': 24,
           };
+        case 'getElapsedRealtimeMs':
+          if (fakeElapsedThrows) {
+            throw MissingPluginException('getElapsedRealtimeMs');
+          }
+          return {'elapsedRealtimeMs': fakeElapsedRealtimeMs};
         case 'getPrivateDns':
           return {'mode': 'off', 'spec': ''};
         case 'getUserRestrictionResidue':
@@ -162,6 +177,9 @@ void main() {
           final key = call.arguments['key'] as String?;
           if (store == 'browser_prefs' && key == 'blocked_lists_json') {
             return {'value': fakeBlocklistsJson};
+          }
+          if (store == 'recovery_prefs' && key == 'forced_removal') {
+            return {'value': fakeForcedRemovalJson};
           }
           return {'value': null};
         case 'setSetting':
@@ -321,11 +339,10 @@ void main() {
       expect(find.text('Chrome'), findsOneWidget);
       expect(find.text('Example Browser'), findsOneWidget);
       expect(find.text('com.android.chrome'), findsOneWidget);
-      // Batch DNS added a third switch (the DNS card's toggle) after
-      // the two browser allow-switches. Batch G moved the torrent
-      // card's toggle out of this screen into Settings (ConfigTab),
-      // so there are three switches here again.
-      expect(find.byType(Switch), findsNWidgets(3));
+      // Two switches: one allow-switch per browser. The DNS card's
+      // toggle used to be a third switch here; item 5 (2026-11-14)
+      // moved DNS back to Settings, so it is gone from this screen.
+      expect(find.byType(Switch), findsNWidgets(2));
       // Chrome is allowed (not suspended); Example is allowed too.
       expect(tester.widget<Switch>(find.byType(Switch).first).value, isTrue);
     });
@@ -966,6 +983,106 @@ void main() {
       await tester.tap(button);
       await tester.pumpAndSettle();
       expect(find.text('Start forced removal?'), findsOneWidget);
+    });
+
+    testWidgets('filing stamps the elapsed clock', (tester) async {
+      // Item 6: the filing flow stamps the elapsed-realtime clock
+      // alongside the wall clock, so the countdown stays due-able
+      // even if the app is killed (the 30 s tick stalls with the
+      // process; the clocks do not).
+      fakeElapsedRealtimeMs = 18 * 60 * 60 * 1000; // 5 h since boot
+      final controller = makeController();
+      await tester.pumpWidget(
+        buildTestApp(child: ConfigTab(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(
+        OutlinedButton,
+        'Start forced removal',
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Start forced removal?'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+      await tester.pumpAndSettle();
+      final setCall = calls.firstWhere(
+        (c) =>
+            c.method == 'setSetting' &&
+            c.arguments['key'] == 'forced_removal',
+      );
+      final stored = jsonDecode(setCall.arguments['value'] as String)
+          as Map<String, dynamic>;
+      expect(stored['active'], isTrue);
+      expect(stored['startedAtElapsedMs'], 18 * 60 * 60 * 1000);
+      expect(stored['startedAtWallMs'], isA<int>());
+      expect(stored['startedAtWallMs'], greaterThan(0));
+    });
+
+    testWidgets('due by both clocks shows the Finish button',
+        (tester) async {
+      // Item 6: filed 25 h ago on both clocks, zero ticks — the
+      // countdown must still be due, and the Finish button must
+      // appear without waiting for the accumulation.
+      final now = DateTime.now();
+      fakeForcedRemovalJson = jsonEncode({
+        'active': true,
+        'accumulatedMs': 0,
+        'startedAtWallMs':
+            now.subtract(const Duration(hours: 25)).millisecondsSinceEpoch,
+        'startedAtElapsedMs': 5 * 60 * 60 * 1000,
+      });
+      fakeElapsedRealtimeMs = 30 * 60 * 60 * 1000; // filed 5 h + 25 h
+      // Created directly (not via makeController): initialise starts
+      // the 30 s ticker, so this test disposes the controller itself
+      // instead of leaving it to the tearDown's session-end pass.
+      final controller = AppController.test(
+        PrivilegedChannel(methodChannel: methodChannel),
+      );
+      await controller.initialise();
+      await tester.pumpWidget(
+        buildTestApp(child: ConfigTab(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Complete — removal can now be finished without a code.'),
+        findsOneWidget,
+      );
+      expect(find.text('Finish removal'), findsOneWidget);
+      expect(find.text('Cancel forced removal'), findsNothing);
+      controller.dispose();
+    });
+
+    testWidgets(
+        'a missing elapsed method leaves accumulation-only behaviour',
+        (tester) async {
+      // Item 6: an old native side without getElapsedRealtimeMs
+      // must not crash the tile or the tick — the countdown simply
+      // stays accumulation-only, exactly as before.
+      final now = DateTime.now();
+      fakeForcedRemovalJson = jsonEncode({
+        'active': true,
+        'accumulatedMs': 0,
+        'startedAtWallMs':
+            now.subtract(const Duration(hours: 25)).millisecondsSinceEpoch,
+        'startedAtElapsedMs': 5 * 60 * 60 * 1000,
+      });
+      fakeElapsedThrows = true;
+      // Created directly (not via makeController): initialise starts
+      // the 30 s ticker, so this test disposes the controller itself
+      // instead of leaving it to the tearDown's session-end pass.
+      final controller = AppController.test(
+        PrivilegedChannel(methodChannel: methodChannel),
+      );
+      await controller.initialise();
+      await tester.pumpWidget(
+        buildTestApp(child: ConfigTab(controller: controller)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Finish removal'), findsNothing);
+      // One 30 s tick also fetches the clock and must survive it.
+      await tester.pump(const Duration(seconds: 31));
+      expect(find.text('Finish removal'), findsNothing);
+      expect(find.textContaining('remaining'), findsOneWidget);
+      controller.dispose();
     });
   });
 }

@@ -341,9 +341,13 @@ void main() {
         );
         await tester.pumpAndSettle();
 
+        // The 20 s display cap is passed explicitly: the production
+        // default is 45 s (deadlock re-audit fix E), and this test
+        // exercises the timeout path at 20 s.
         final removalFuture = executeDeviceOwnerRemovalFlow(
           context: testContext!,
           controller: controller,
+          maxDisplayDuration: const Duration(seconds: 20),
         );
 
         await tester.pump();
@@ -601,10 +605,12 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        // Initial run times out at 20s
+        // Initial run times out at 20s (passed explicitly: the
+        // production default is 45 s since deadlock re-audit fix E).
         final removalFuture = executeDeviceOwnerRemovalFlow(
           context: testContext!,
           controller: controller,
+          maxDisplayDuration: const Duration(seconds: 20),
         );
 
         await tester.pump();
