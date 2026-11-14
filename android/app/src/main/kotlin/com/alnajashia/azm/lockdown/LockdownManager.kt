@@ -63,6 +63,18 @@ object LockdownManager {
         alarmManager.cancel(endIntent(context))
     }
 
+    /**
+     * Cancels every lockdown alarm: the window-start alarm (the
+     * null-id intent matches the armed one — PendingIntent matching
+     * ignores extras) and the end alarm. Used by the removal teardown
+     * (step 1b) so no lockdown alarm can fire after the owner is gone.
+     */
+    fun cancelAllWindows(context: Context) {
+        val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
+        alarmManager.cancel(windowStartIntent(context, null))
+        cancelEndAlarm(context)
+    }
+
     private fun endIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
         context,
         REQUEST_END,
