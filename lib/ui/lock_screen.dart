@@ -939,6 +939,21 @@ class _LockScreenState extends State<LockScreen> {
           e.code == 'NotAvailable' ||
           e.code == 'PasscodeNotSet') {
         await _unlockWithoutDeviceCredential();
+      } else if (e.code == 'LockedOut' || e.code == 'PermanentlyLockedOut') {
+        // Biometric lockout (deadlock re-audit §3): the sensor locked
+        // after repeated failed attempts — NOT a missing permission.
+        // The old code relabelled every other PlatformException as
+        // PERMISSION_DENIED, so the card lied about the cause. The
+        // message names the device credential, which is also the
+        // lockout's own reset path: unlocking once with PIN / pattern /
+        // password clears it, and the "Access app" button can then be
+        // tried again.
+        if (mounted) {
+          await showErrorCard(
+            context,
+            PrivilegedException('AUTH_BIOMETRIC_LOCKED_OUT', ''),
+          );
+        }
       } else if (mounted) {
         await showErrorCard(
           context,
@@ -953,11 +968,13 @@ class _LockScreenState extends State<LockScreen> {
       // failure inside the biometric bridge, …) must be visible to the
       // user. Reported by the user 2026-11-09: tapping "Access app"
       // previously showed nothing at all when the prompt could not start.
+      // Not a permission failure — it gets its own code (deadlock
+      // re-audit fix F), not PERMISSION_DENIED.
       if (mounted) {
         await showErrorCard(
           context,
           PrivilegedException(
-            'PERMISSION_DENIED',
+            'AUTH_FAILED_TO_START',
             l10n.authCouldNotStart,
           ),
         );
