@@ -121,6 +121,20 @@ object FocusScheduleManager {
         alarmManager.cancel(snoozePendingIntent(context, 0, null, ""))
     }
 
+    /**
+     * Cancels every focus-schedule alarm: the next-trigger alarm, the
+     * snooze alarm and the pre-reminder alarm (PendingIntent matching
+     * ignores extras, so the plain intents cancel the armed ones).
+     * Used by the removal teardown (step 1b) so no schedule can fire
+     * after the owner is gone. The stored schedules are kept.
+     */
+    fun cancelAllAlarms(context: Context) {
+        val alarmManager = context.getSystemService(AlarmManager::class.java) ?: return
+        alarmManager.cancel(schedulePendingIntent(context))
+        alarmManager.cancel(snoozePendingIntent(context, 0, null, ""))
+        alarmManager.cancel(preReminderPendingIntent(context))
+    }
+
     /** Posts the reminder notification AND tries a direct activity start (belt and braces). */
     fun launchReminder(context: Context, schedule: FocusSchedule, snoozeCount: Int) {
         val activityIntent = Intent(context, FocusReminderActivity::class.java).apply {
